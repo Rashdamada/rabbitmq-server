@@ -1,9 +1,4 @@
 load(
-    "@rules_erlang//:erlang_home.bzl",
-    "ErlangHomeProvider",
-    "ErlangVersionProvider",
-)
-load(
     "@rules_erlang//:erlang_app_info.bzl",
     "ErlangAppInfo",
 )

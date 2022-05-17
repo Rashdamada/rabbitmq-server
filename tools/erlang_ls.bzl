@@ -1,9 +1,12 @@
-load("@rules_erlang//:erlang_home.bzl", "ErlangHomeProvider")
+load(
+    "@bazel_skylib//rules:common_settings.bzl",
+    "BuildSettingInfo",
+)
 
 def _impl(ctx):
     out = ctx.actions.declare_file(ctx.label.name)
 
-    erlang_home = ctx.attr._erlang_home[ErlangHomeProvider].path
+    erlang_home = ctx.attr._erlang_home[BuildSettingInfo].value[0]
 
     ctx.actions.write(
         output = out,

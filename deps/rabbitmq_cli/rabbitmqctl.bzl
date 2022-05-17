@@ -1,4 +1,4 @@
-load("@rules_erlang//:erlang_home.bzl", "ErlangHomeProvider", "ErlangVersionProvider")
+# load("@rules_erlang//:erlang_home.bzl", "ErlangHomeProvider", "ErlangVersionProvider")
 load(
     "@rules_erlang//:erlang_app_info.bzl",
     "ErlangAppInfo",
@@ -10,7 +10,18 @@ load(
     "QUERY_ERL_VERSION",
     "path_join",
 )
-load("//:elixir_home.bzl", "ElixirHomeProvider")
+load(
+    "@rules_erlang//tools:erlang.bzl",
+    "DEFAULT_ERLANG_INSTALLATION",
+    "installation_suffix",
+)
+load(
+    "//tools:erlang_installation.bzl",
+    "ErlangInstallationInfo",
+    "erlang_dirs",
+    "maybe_symlink_erlang",
+)
+# load("//:elixir_home.bzl", "ElixirHomeProvider")
 
 MIX_DEPS_DIR = "deps"
 
@@ -167,18 +178,23 @@ touch ${{MIX_INVOCATION_DIR}}/placeholder
 rabbitmqctl_private = rule(
     implementation = _impl,
     attrs = {
+        "elixir_installation": attr.label(
+            mandatory = True,
+            providers = [ElixirInstallationInfo],
+        ),
         "is_windows": attr.bool(mandatory = True),
         "srcs": attr.label_list(allow_files = True),
         "deps": attr.label_list(providers = [ErlangAppInfo]),
-        "_erlang_version": attr.label(default = Label("@rules_erlang//:erlang_version")),
-        "_erlang_home": attr.label(default = Label("@rules_erlang//:erlang_home")),
-        "_elixir_home": attr.label(default = Label("//:elixir_home")),
+        # "_erlang_version": attr.label(default = Label("@rules_erlang//:erlang_version")),
+        # "_erlang_home": attr.label(default = Label("@rules_erlang//:erlang_home")),
+        # "_elixir_home": attr.label(default = Label("//:elixir_home")),
     },
     executable = True,
 )
 
 def rabbitmqctl(**kwargs):
     rabbitmqctl_private(
+        erlang_installations = [DEFAULT_ERLANG_INSTALLATION],
         is_windows = select({
             "@bazel_tools//src/conditions:host_windows": True,
             "//conditions:default": False,

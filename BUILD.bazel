@@ -1,12 +1,20 @@
-load("@rules_pkg//:pkg.bzl", "pkg_tar")
+load(
+    "@bazel_skylib//rules:common_settings.bzl",
+    "bool_flag",
+    "string_list_flag",
+)
 load("@rules_erlang//:dialyze.bzl", "plt")
 load("@rules_erlang//:shell.bzl", "shell")
-load("elixir_home.bzl", "elixir_home")
 load(":rabbitmq_home.bzl", "rabbitmq_home")
 load(":rabbitmq_run.bzl", "rabbitmq_run", "rabbitmq_run_command")
 load(":rabbitmqctl.bzl", "rabbitmqctl")
-load(":rabbitmq.bzl", "APP_VERSION", "all_plugins")
-load(":dist.bzl", "collect_licenses", "versioned_rabbitmq_home")
+load(":dist.bzl", "packages_generic_unix")
+load(
+    ":rabbitmq.bzl",
+    "ERLANG_23_INSTALLATION",
+    "ERLANG_INSTALLATIONS",
+    "all_plugins",
+)
 
 exports_files([
     "scripts/bazel/rabbitmq-run.sh",
@@ -20,12 +28,15 @@ config_setting(
     },
 )
 
-# This allows us to
-# `bazel build //my/target \
-#    --//:elixir_home=/path/to/elixir/installation`
-elixir_home(
+string_list_flag(
     name = "elixir_home",
-    build_setting_default = "~/.kiex/elixirs/elixir-1.10.4",
+    build_setting_default = [],
+    visibility = ["//visibility:public"],
+)
+
+bool_flag(
+    name = "use_external_elixir",
+    build_setting_default = False,
     visibility = ["//visibility:public"],
 )
 
@@ -50,11 +61,15 @@ plt(
 
 rabbitmq_home(
     name = "broker-home",
-    plugins = all_plugins(rabbitmq_workspace = ""),
+    plugins = all_plugins(
+        erlang_installation = ERLANG_23_INSTALLATION,
+        rabbitmq_workspace = "",
+    ),
 )
 
 rabbitmq_run(
     name = "rabbitmq-run",
+    erlang_installation = ERLANG_23_INSTALLATION,
     home = ":broker-home",
     visibility = ["//visibility:public"],
 )
@@ -86,72 +101,15 @@ rabbitmqctl(
 
 shell(
     name = "repl",
-    deps = all_plugins(rabbitmq_workspace = ""),
-)
-
-collect_licenses(
-    name = "licenses",
-    srcs = glob(
-        ["LICENSE*"],
-        exclude = [
-            "LICENSE.md",
-            "LICENSE.txt",
-        ],
+    erlang_installation = ERLANG_23_INSTALLATION,
+    deps = all_plugins(
+        erlang_installation = ERLANG_23_INSTALLATION,
+        rabbitmq_workspace = "",
     ),
-    deps = all_plugins(rabbitmq_workspace = ""),
 )
 
-versioned_rabbitmq_home(
-    name = "dist-home",
-    plugins = all_plugins(rabbitmq_workspace = ""),
-)
-
-pkg_tar(
-    name = "license-files",
-    srcs = [
-        ":licenses",
-        "//deps/rabbit:INSTALL",
-    ],
-    visibility = ["//visibility:public"],
-)
-
-pkg_tar(
-    name = "scripts",
-    srcs = [
-        "scripts/bash_autocomplete.sh",
-        "scripts/rabbitmq-script-wrapper",
-        "scripts/rabbitmqctl-autocomplete.sh",
-        "scripts/zsh_autocomplete.sh",
-    ],
-    package_dir = "scripts",
-    visibility = ["//visibility:public"],
-)
-
-pkg_tar(
-    name = "release-notes",
-    srcs = glob([
-        "release-notes/*.md",
-        "release-notes/*.txt",
-    ]),
-    package_dir = "release-notes",
-    visibility = ["//visibility:public"],
-)
-
-pkg_tar(
-    name = "package-generic-unix",
-    srcs = [
-        ":dist-home",
-    ],
-    extension = "tar.xz",
-    package_dir = "rabbitmq_server-{}".format(APP_VERSION),
-    strip_prefix = "dist-home",
-    visibility = ["//visibility:public"],
-    deps = [
-        ":license-files",
-        ":release-notes",
-        ":scripts",
-        "//deps/rabbit:manpages-dir",
-    ],
+packages_generic_unix(
+    erlang_installations = ERLANG_INSTALLATIONS,
 )
 
 genrule(

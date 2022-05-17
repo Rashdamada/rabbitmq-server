@@ -1,7 +1,17 @@
-load("@rules_erlang//:erlang_home.bzl", "ErlangHomeProvider")
+load("@rules_pkg//:pkg.bzl", "pkg_tar")
 load("@rules_erlang//:erlang_app_info.bzl", "ErlangAppInfo", "flat_deps")
 load("@rules_erlang//:util.bzl", "path_join")
 load("@rules_erlang//:ct.bzl", "additional_file_dest_relative_path")
+load(
+    "@rules_erlang//tools:erlang_installation.bzl",
+    "ErlangInstallationInfo",
+    "erlang_dirs",
+    "maybe_symlink_erlang",
+)
+load(
+    "@rules_erlang//tools:erlang.bzl",
+    "installation_suffix",
+)
 load(
     ":rabbitmq_home.bzl",
     "RABBITMQ_HOME_ATTRS",
@@ -9,6 +19,12 @@ load(
     "flatten",
     "link_escript",
     "unique_versions",
+)
+load(
+    ":rabbitmq.bzl",
+    "APP_VERSION",
+    "ERLANG_INSTALLATIONS",
+    "all_plugins",
 )
 
 def _collect_licenses_impl(ctx):
@@ -70,7 +86,7 @@ def _app_file(plugin_lib_info):
 def _plugins_dir(ctx, plugins):
     plugins_dir = ctx.actions.declare_directory(path_join(ctx.label.name, "plugins"))
 
-    erlang_home = ctx.attr._erlang_home[ErlangHomeProvider].path
+    (erlang_home, _, runfiles) = erlang_dirs(ctx)
 
     inputs = []
 
@@ -196,7 +212,10 @@ def _versioned_rabbitmq_home_impl(ctx):
 versioned_rabbitmq_home_private = rule(
     implementation = _versioned_rabbitmq_home_impl,
     attrs = dict(RABBITMQ_HOME_ATTRS.items() + {
-        "_erlang_home": attr.label(default = "@rules_erlang//:erlang_home"),
+        "erlang_installation": attr.label(
+            mandatory = True,
+            providers = [ErlangInstallationInfo],
+        ),
     }.items()),
 )
 
@@ -208,3 +227,79 @@ def versioned_rabbitmq_home(**kwargs):
         }),
         **kwargs
     )
+
+# This macro must be invoked from the top level BUILD.bazel of rabbitmq-server
+def packages_generic_unix(erlang_installations = ERLANG_INSTALLATIONS):
+    collect_licenses(
+        name = "licenses",
+        srcs = native.glob(
+            ["LICENSE*"],
+            exclude = [
+                "LICENSE.md",
+                "LICENSE.txt",
+            ],
+        ),
+        deps = all_plugins(
+            erlang_installation = erlang_installations[0],
+            rabbitmq_workspace = "",
+        ),
+    )
+    pkg_tar(
+        name = "license-files",
+        srcs = [
+            ":licenses",
+            "//deps/rabbit:INSTALL",
+        ],
+        visibility = ["//visibility:public"],
+    )
+
+    pkg_tar(
+        name = "scripts",
+        srcs = [
+            "scripts/bash_autocomplete.sh",
+            "scripts/rabbitmq-script-wrapper",
+            "scripts/rabbitmqctl-autocomplete.sh",
+            "scripts/zsh_autocomplete.sh",
+        ],
+        package_dir = "scripts",
+        visibility = ["//visibility:public"],
+    )
+
+    pkg_tar(
+        name = "release-notes",
+        srcs = native.glob([
+            "release-notes/*.md",
+            "release-notes/*.txt",
+        ]),
+        package_dir = "release-notes",
+        visibility = ["//visibility:public"],
+    )
+
+    for erlang_installation in erlang_installations:
+        suffix = installation_suffix(erlang_installation)
+
+        versioned_rabbitmq_home(
+            name = "dist-home-{}".format(suffix),
+            erlang_installation = erlang_installation,
+            plugins = all_plugins(
+                erlang_installation = erlang_installation,
+                rabbitmq_workspace = "",
+            ),
+        )
+
+        pkg_tar(
+            name = "package-generic-unix-{}".format(suffix),
+            srcs = [
+                ":dist-home-{}".format(suffix),
+            ],
+            extension = "tar.xz",
+            package_dir = "rabbitmq_server-{}".format(APP_VERSION),
+            strip_prefix = "dist-home-{}".format(suffix),
+            visibility = ["//visibility:public"],
+            deps = [
+                ":license-files",
+                ":release-notes",
+                ":scripts",
+                "//deps/rabbit:manpages-dir",
+            ],
+        )

@@ -1,4 +1,8 @@
 load(
+    "@rules_erlang//:erlang_bytecode.bzl",
+    "erlang_bytecode",
+)
+load(
     "@rules_erlang//:erlang_app.bzl",
     "DEFAULT_ERLC_OPTS",
     "DEFAULT_TEST_ERLC_OPTS",
@@ -6,10 +10,14 @@ load(
     "test_erlang_app",
 )
 load(
-    "@rules_erlang//:ct_sharded.bzl",
+    "@rules_erlang//:ct.bzl",
     "ct_suite",
     "ct_suite_variant",
     _assert_suites = "assert_suites",
+)
+load(
+    "@rules_erlang//tools:erlang.bzl",
+    "installation_suffix",
 )
 load("//:rabbitmq_home.bzl", "rabbitmq_home")
 load("//:rabbitmq_run.bzl", "rabbitmq_run")
@@ -22,6 +30,14 @@ def without(item, elements):
 STARTS_BACKGROUND_BROKER_TAG = "starts-background-broker"
 
 MIXED_VERSION_CLUSTER_TAG = "mixed-version-cluster"
+
+ERLANG_INSTALLATIONS = [
+    "@otp_24.3.4//:erlang_installation",
+    "@otp_23.3.4.14//:erlang_installation",
+]
+
+ERLANG_24_INSTALLATION = ERLANG_INSTALLATIONS[0]
+ERLANG_23_INSTALLATION = ERLANG_INSTALLATIONS[1]
 
 RABBITMQ_ERLC_OPTS = DEFAULT_ERLC_OPTS + [
     "-DINSTR_MOD=gm",
@@ -86,8 +102,12 @@ LABELS_WITH_TEST_VERSIONS = [
     "//deps/rabbit/apps/rabbitmq_prelaunch:erlang_app",
 ]
 
-def all_plugins(rabbitmq_workspace = "@rabbitmq-server"):
-    return [rabbitmq_workspace + p for p in ALL_PLUGINS]
+def all_plugins(rabbitmq_workspace = "@rabbitmq-server", erlang_installation = None):
+    suffix = installation_suffix(erlang_installation)
+    return [
+        "{}{}-{}".format(rabbitmq_workspace, p, suffix)
+        for p in ALL_PLUGINS
+    ]
 
 def with_test_versions(deps):
     r = []
@@ -107,6 +127,8 @@ def rabbitmq_app(
         app_env = "",
         app_extra_keys = "",
         extra_apps = [],
+        extra_hdrs = [],
+        extra_srcs = [],
         extra_priv = [],
         build_deps = [],
         deps = [],
@@ -118,8 +140,10 @@ def rabbitmq_app(
         app_module = app_module,
         app_registered = app_registered,
         app_env = app_env,
-        app_extra = app_extra_keys,
+        app_extra_keys = app_extra_keys,
         extra_apps = extra_apps,
+        extra_hdrs = extra_hdrs,
+        extra_srcs = extra_srcs,
         extra_priv = extra_priv,
         erlc_opts = select({
             "//:debug_build": without("+deterministic", RABBITMQ_ERLC_OPTS),
@@ -137,8 +161,10 @@ def rabbitmq_app(
         app_module = app_module,
         app_registered = app_registered,
         app_env = app_env,
-        app_extra = app_extra_keys,
+        app_extra_keys = app_extra_keys,
         extra_apps = extra_apps,
+        extra_hdrs = extra_hdrs,
+        extra_srcs = extra_srcs,
         extra_priv = extra_priv,
         erlc_opts = select({
             "//:debug_build": without("+deterministic", RABBITMQ_TEST_ERLC_OPTS),
@@ -160,13 +186,13 @@ def rabbitmq_suite(erlc_opts = [], test_env = {}, **kwargs):
     )
     return kwargs["name"]
 
-def broker_for_integration_suites():
+def broker_for_integration_suites(extra_plugins = []):
     rabbitmq_home(
         name = "broker-for-tests-home",
         plugins = [
             "//deps/rabbit:erlang_app",
             ":erlang_app",
-        ],
+        ] + extra_plugins,
         testonly = True,
     )
 
@@ -175,6 +201,26 @@ def broker_for_integration_suites():
         home = ":broker-for-tests-home",
         testonly = True,
     )
+
+def rabbitmq_test_helper(
+        name = "",
+        erlang_installations = ERLANG_INSTALLATIONS,
+        deps = [],
+        **kwargs):
+    for erlang_installation in erlang_installations:
+        suffix = installation_suffix(erlang_installation)
+        deps_for_this_erlang = [
+            "{}-{}".format(dep, suffix)
+            for dep in deps
+        ]
+        erlang_bytecode(
+            name = "{}-{}".format(name, suffix),
+            testonly = True,
+            dest = "test",
+            erlc_opts = RABBITMQ_TEST_ERLC_OPTS,
+            deps = deps_for_this_erlang,
+            **kwargs
+        )
 
 def rabbitmq_integration_suite(
         package,

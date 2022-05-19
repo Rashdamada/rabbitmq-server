@@ -53,7 +53,7 @@ git_repository(
 
 git_repository(
     name = "rules_erlang",
-    branch = "internal-erlang",
+    branch = "internal-erlang-with-platforms",
     remote = "https://github.com/rabbitmq/rules_erlang.git",
 )
 

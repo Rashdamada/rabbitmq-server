@@ -6,7 +6,7 @@ load(
 def _impl(ctx):
     out = ctx.actions.declare_file(ctx.label.name)
 
-    erlang_home = ctx.attr._erlang_home[BuildSettingInfo].value[0]
+    erlang_home = ctx.attr._erlang_home[BuildSettingInfo].value
 
     ctx.actions.write(
         output = out,
@@ -36,6 +36,6 @@ plt_path: bazel-bin/deps/rabbit/.base_plt.plt
 erlang_ls_config = rule(
     implementation = _impl,
     attrs = {
-        "_erlang_home": attr.label(default = "@rules_erlang//:erlang_home"),
+        "_erlang_home": attr.label(default = Label("@rules_erlang//:erlang_home")),
     },
 )

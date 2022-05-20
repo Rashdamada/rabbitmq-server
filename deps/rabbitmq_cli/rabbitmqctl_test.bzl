@@ -4,8 +4,6 @@ load(
 )
 load(
     "@rules_erlang//:util.bzl",
-    "BEGINS_WITH_FUN",
-    "QUERY_ERL_VERSION",
     "path_join",
     "windows_path",
 )
@@ -14,15 +12,13 @@ load(
     "erl_libs_contents",
 )
 load(
-    "//:elixir_home.bzl",
-    "ElixirHomeProvider",
+    "//bazel/elixir:elixir_toolchain.bzl",
+    "elixir_dirs",
+    "erlang_dirs",
+    "maybe_symlink_erlang",
 )
 
 def _impl(ctx):
-    erlang_version = ctx.attr._erlang_version[ErlangVersionProvider].version
-    erlang_home = ctx.attr._erlang_home[ErlangHomeProvider].path
-    elixir_home = ctx.attr._elixir_home[ElixirHomeProvider].path
-
     erl_libs_dir = ctx.label.name + "_deps"
 
     erl_libs_files = erl_libs_contents(ctx, headers = True, dir = erl_libs_dir)
@@ -30,6 +26,9 @@ def _impl(ctx):
     package_dir = path_join(ctx.label.workspace_root, ctx.label.package)
 
     erl_libs_path = path_join(package_dir, erl_libs_dir)
+
+    (erlang_home, _, erlang_runfiles) = erlang_dirs(ctx)
+    (elixir_home, elixir_runfiles) = elixir_dirs(ctx)
 
     if not ctx.attr.is_windows:
         output = ctx.actions.declare_file(ctx.label.name)
@@ -51,14 +50,6 @@ ln -s ${{PWD}}/{package_dir}/mix.exs ${{TEST_UNDECLARED_OUTPUTS_DIR}}
 cd ${{TEST_UNDECLARED_OUTPUTS_DIR}}
 
 export HOME=${{PWD}}
-
-{begins_with_fun}
-V=$("{erlang_home}"/bin/{query_erlang_version})
-if ! beginswith "{erlang_version}" "$V"; then
-    echo "Erlang version mismatch (Expected {erlang_version}, found $V)"
-    exit 1
-fi
-
 export DEPS_DIR=$TEST_SRCDIR/$TEST_WORKSPACE/{erl_libs_path}
 export ERL_COMPILER_OPTIONS=deterministic
 export MIX_ENV=test mix dialyzer
@@ -92,9 +83,6 @@ set +u
 set -x
 "{elixir_home}"/bin/mix test --trace --max-failures 1 ${{TEST_FILE}}
     """.format(
-            begins_with_fun = BEGINS_WITH_FUN,
-            query_erlang_version = QUERY_ERL_VERSION,
-            erlang_version = erlang_version,
             erlang_home = erlang_home,
             elixir_home = elixir_home,
             package_dir = package_dir,
@@ -140,8 +128,7 @@ goto :EOF
 :error
 exit /b 1
 """.format(
-            erlang_version = erlang_version,
-            erlang_home = windows_path(ctx.attr._erlang_home[ErlangHomeProvider].path),
+            erlang_home = windows_path(erlang_home),
             elixir_home = windows_path(elixir_home),
             package_dir = windows_path(ctx.label.package),
             erl_libs_path = erl_libs_path,
@@ -161,10 +148,16 @@ exit /b 1
         files = ctx.files.srcs + ctx.files.data,
         transitive_files = depset(erl_libs_files),
     )
-    for dep in ctx.attr.deps:
-        lib_info = dep[ErlangAppInfo]
-        runfiles = runfiles.merge(ctx.runfiles(lib_info.include + lib_info.beam))
-    runfiles = runfiles.merge(ctx.attr.rabbitmq_run[DefaultInfo].default_runfiles)
+    runfiles = runfiles.merge_all(
+        [
+            erlang_runfiles,
+            elixir_runfiles,
+            ctx.attr.rabbitmq_run[DefaultInfo].default_runfiles,
+        ] + [
+            ctx.runfiles(dep[ErlangAppInfo].include + dep[ErlangAppInfo].beam)
+            for dep in ctx.attr.deps
+        ],
+    )
 
     return [DefaultInfo(
         runfiles = runfiles,
@@ -182,10 +175,10 @@ rabbitmqctl_private_test = rule(
             executable = True,
             cfg = "target",
         ),
-        "_erlang_version": attr.label(default = Label("@rules_erlang//:erlang_version")),
-        "_erlang_home": attr.label(default = Label("@rules_erlang//:erlang_home")),
-        "_elixir_home": attr.label(default = Label("//:elixir_home")),
     },
+    toolchains = [
+        "//bazel/elixir:toolchain_type",
+    ],
     test = True,
 )
 

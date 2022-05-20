@@ -46,20 +46,38 @@ buildbuddy(
 )
 
 git_repository(
-    name = "rbe",
-    branch = "linux-rbe",
-    remote = "https://github.com/rabbitmq/rbe-erlang-platform.git",
-)
-
-git_repository(
     name = "rules_erlang",
     branch = "internal-erlang-with-platforms",
     remote = "https://github.com/rabbitmq/rules_erlang.git",
 )
 
-load("@rules_erlang//:rules_erlang.bzl", "rules_erlang_dependencies")
+load(
+    "@rules_erlang//:rules_erlang.bzl",
+    "otp_github_release",
+    "rules_erlang_dependencies",
+)
 
 rules_erlang_dependencies()
+
+otp_github_release(
+    name = "otp_23.3.4.14",
+    major_version = 23,
+    sha256 = "35123f366ded534775a05db8ad6c06c20519ae228af1b5952132b10845621f21",
+    version = "23.3.4.14",
+)
+
+otp_github_release(
+    name = "otp_24.3.4",
+    major_version = 24,
+    sha256 = "76fcca5ba6f11eb9caac32bf053badc46b5d66f867150eef077f4f0d7944ecd7",
+    version = "24.3.4",
+)
+
+register_toolchains(
+    "@otp_23.3.4.14//:erlang_linux_toolchain",
+    "@otp_24.3.4//:erlang_linux_toolchain",
+    # "@elixir_1.12.2//:elixir_linux_toolchain",
+)
 
 load("//:workspace_helpers.bzl", "rabbitmq_external_deps")
 

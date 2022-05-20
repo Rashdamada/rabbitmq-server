@@ -1,4 +1,3 @@
-# load("@rules_erlang//:erlang_home.bzl", "ErlangHomeProvider", "ErlangVersionProvider")
 load(
     "@rules_erlang//:erlang_app_info.bzl",
     "ErlangAppInfo",
@@ -6,30 +5,18 @@ load(
 )
 load(
     "@rules_erlang//:util.bzl",
-    "BEGINS_WITH_FUN",
-    "QUERY_ERL_VERSION",
     "path_join",
 )
 load(
-    "@rules_erlang//tools:erlang.bzl",
-    "DEFAULT_ERLANG_INSTALLATION",
-    "installation_suffix",
-)
-load(
-    "//tools:erlang_installation.bzl",
-    "ErlangInstallationInfo",
+    "//bazel/elixir:elixir_toolchain.bzl",
+    "elixir_dirs",
     "erlang_dirs",
     "maybe_symlink_erlang",
 )
-# load("//:elixir_home.bzl", "ElixirHomeProvider")
 
 MIX_DEPS_DIR = "deps"
 
 def _impl(ctx):
-    erlang_version = ctx.attr._erlang_version[ErlangVersionProvider].version
-    erlang_home = ctx.attr._erlang_home[ErlangHomeProvider].path
-    elixir_home = ctx.attr._elixir_home[ElixirHomeProvider].path
-
     escript = ctx.actions.declare_file(path_join("escript", "rabbitmqctl"))
     ebin = ctx.actions.declare_directory("ebin")
 
@@ -37,8 +24,6 @@ def _impl(ctx):
     copy_compiled_deps_commands.append("mkdir ${{MIX_INVOCATION_DIR}}/{}".format(MIX_DEPS_DIR))
     for dep in ctx.attr.deps:
         lib_info = dep[ErlangAppInfo]
-        if lib_info.erlang_version != erlang_version:
-            fail("Mismatched erlang versions", erlang_version, lib_info.erlang_version)
 
         dest_dir = path_join("${MIX_INVOCATION_DIR}", MIX_DEPS_DIR, lib_info.app_name)
         copy_compiled_deps_commands.append(
@@ -71,6 +56,9 @@ def _impl(ctx):
     if ctx.label.workspace_root != "":
         package_dir = path_join(ctx.label.workspace_root, package_dir)
 
+    (erlang_home, _, erlang_runfiles) = erlang_dirs(ctx)
+    (elixir_home, elixir_runfiles) = elixir_dirs(ctx)
+
     script = """set -euo pipefail
 
 export LANG="en_US.UTF-8"
@@ -89,14 +77,6 @@ cp    ${{PWD}}/{package_dir}/mix.exs ${{MIX_INVOCATION_DIR}}/mix.exs
 
 cd ${{MIX_INVOCATION_DIR}}
 export HOME=${{PWD}}
-
-{begins_with_fun}
-V=$("{erlang_home}"/bin/{query_erlang_version})
-if ! beginswith "{erlang_version}" "$V"; then
-    echo "Erlang version mismatch (Expected {erlang_version}, found $V)"
-    exit 1
-fi
-
 export DEPS_DIR={mix_deps_dir}
 
 # mix can error on windows regarding permissions for a symlink at this path
@@ -126,9 +106,6 @@ rm -dR ${{MIX_INVOCATION_DIR}}
 mkdir ${{MIX_INVOCATION_DIR}}
 touch ${{MIX_INVOCATION_DIR}}/placeholder
     """.format(
-        begins_with_fun = BEGINS_WITH_FUN,
-        query_erlang_version = QUERY_ERL_VERSION,
-        erlang_version = erlang_version,
         erlang_home = erlang_home,
         elixir_home = elixir_home,
         mix_invocation_dir = mix_invocation_dir.path,
@@ -156,8 +133,15 @@ touch ${{MIX_INVOCATION_DIR}}/placeholder
     deps = flat_deps(ctx.attr.deps)
 
     runfiles = ctx.runfiles([ebin])
-    for dep in deps:
-        runfiles = runfiles.merge(dep[DefaultInfo].default_runfiles)
+    runfiles = runfiles.merge_all(
+        [
+            erlang_runfiles,
+            elixir_runfiles,
+        ] + [
+            dep[DefaultInfo].default_runfiles
+            for dep in deps
+        ],
+    )
 
     return [
         DefaultInfo(
@@ -167,7 +151,6 @@ touch ${{MIX_INVOCATION_DIR}}/placeholder
         ),
         ErlangAppInfo(
             app_name = ctx.attr.name,
-            erlang_version = erlang_version,
             include = [],
             beam = [ebin],
             priv = [],
@@ -178,23 +161,18 @@ touch ${{MIX_INVOCATION_DIR}}/placeholder
 rabbitmqctl_private = rule(
     implementation = _impl,
     attrs = {
-        "elixir_installation": attr.label(
-            mandatory = True,
-            providers = [ElixirInstallationInfo],
-        ),
         "is_windows": attr.bool(mandatory = True),
         "srcs": attr.label_list(allow_files = True),
         "deps": attr.label_list(providers = [ErlangAppInfo]),
-        # "_erlang_version": attr.label(default = Label("@rules_erlang//:erlang_version")),
-        # "_erlang_home": attr.label(default = Label("@rules_erlang//:erlang_home")),
-        # "_elixir_home": attr.label(default = Label("//:elixir_home")),
     },
+    toolchains = [
+        "//bazel/elixir:toolchain_type",
+    ],
     executable = True,
 )
 
 def rabbitmqctl(**kwargs):
     rabbitmqctl_private(
-        erlang_installations = [DEFAULT_ERLANG_INSTALLATION],
         is_windows = select({
             "@bazel_tools//src/conditions:host_windows": True,
             "//conditions:default": False,

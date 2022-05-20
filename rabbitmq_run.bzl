@@ -4,8 +4,7 @@ load(
     "windows_path",
 )
 load(
-    "@rules_erlang//tools:erlang_installation.bzl",
-    "ErlangInstallationInfo",
+    "@rules_erlang//tools:erlang_toolchain.bzl",
     "erlang_dirs",
     "maybe_symlink_erlang",
 )
@@ -68,13 +67,10 @@ rabbitmq_run_private = rule(
             default = Label("//:scripts/bazel/rabbitmq-run.bat"),
             allow_single_file = True,
         ),
-        "erlang_installation": attr.label(
-            mandatory = True,
-            providers = [ErlangInstallationInfo],
-        ),
         "is_windows": attr.bool(mandatory = True),
         "home": attr.label(providers = [RabbitmqHomeInfo]),
     },
+    toolchains = ["@rules_erlang//tools:toolchain_type"],
     executable = True,
 )
 

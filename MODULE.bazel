@@ -5,10 +5,15 @@ module(
 
 bazel_dep(name = "rules_erlang", version = "2.5.2")
 
-git_override(
+# git_override(
+#     module_name = "rules_erlang",
+#     remote = "https://github.com/rabbitmq/rules_erlang.git",
+#     commit = "f5441332f0d4509ef3e81b3b9f4b48bbf7a97f85", # <- internal-erlang-with-platforms branch
+# )
+
+local_path_override(
     module_name = "rules_erlang",
-    remote = "https://github.com/rabbitmq/rules_erlang.git",
-    commit = "e5b0b907284b94bb9e9eff50ad678dd7402dc87a", # <- internal-erlang-with-platforms branch
+    path = "../rules_erlang",
 )
 
 erlang_package = use_extension(
@@ -18,14 +23,14 @@ erlang_package = use_extension(
 
 erlang_package.otp_github_release(
     version = "24.3.4",
-    sha256 = "",
-    index = 0,
+    sha256 = "76fcca5ba6f11eb9caac32bf053badc46b5d66f867150eef077f4f0d7944ecd7",
+    major_version = 24,
 )
 
 erlang_package.otp_github_release(
     version = "23.3.4.14",
-    sha256 = "",
-    index = 1,
+    sha256 = "35123f366ded534775a05db8ad6c06c20519ae228af1b5952132b10845621f21",
+    major_version = 23,
 )
 
 elixir = use_extension(
@@ -34,17 +39,8 @@ elixir = use_extension(
 )
 
 elixir.elixir_github_release(
-    version = "1.13.4",
+    version = "1.12.2",
     sha256 = "",
-    index = 0,
-    erlang_installation = "@otp_24.3.4//:erlang_installation",
-)
-
-elixir.elixir_github_release(
-    version = "1.10.4",
-    sha256 = "",
-    index = 1,
-    erlang_installation = "@otp_23.3.4.14//:erlang_installation",
 )
 
 erlang_package.hex_package(
@@ -286,8 +282,7 @@ use_repo(
     erlang_package,
     "otp_24.3.4",
     "otp_23.3.4.14",
-    "elixir_1.13.4_otp_24.3.4",
-    "elixir_1.10.4_otp_23.3.4.14",
+    "elixir_1.12.2",
     "accept",
     "aten",
     "base64url",

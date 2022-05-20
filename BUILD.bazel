@@ -1,20 +1,14 @@
 load(
     "@bazel_skylib//rules:common_settings.bzl",
-    "bool_flag",
-    "string_list_flag",
+    "string_flag",
 )
 load("@rules_erlang//:dialyze.bzl", "plt")
 load("@rules_erlang//:shell.bzl", "shell")
 load(":rabbitmq_home.bzl", "rabbitmq_home")
 load(":rabbitmq_run.bzl", "rabbitmq_run", "rabbitmq_run_command")
 load(":rabbitmqctl.bzl", "rabbitmqctl")
-load(":dist.bzl", "packages_generic_unix")
-load(
-    ":rabbitmq.bzl",
-    "ERLANG_23_INSTALLATION",
-    "ERLANG_INSTALLATIONS",
-    "all_plugins",
-)
+load(":dist.bzl", "package_generic_unix")
+load(":rabbitmq.bzl", "all_plugins")
 
 exports_files([
     "scripts/bazel/rabbitmq-run.sh",
@@ -28,16 +22,75 @@ config_setting(
     },
 )
 
-string_list_flag(
-    name = "elixir_home",
-    build_setting_default = [],
+constraint_setting(name = "elixir_version")
+
+constraint_value(
+    name = "elixir_1_12",
+    constraint_setting = ":elixir_version",
     visibility = ["//visibility:public"],
 )
 
-bool_flag(
-    name = "use_external_elixir",
-    build_setting_default = False,
+constraint_value(
+    name = "elixir_external",
+    constraint_setting = ":elixir_version",
     visibility = ["//visibility:public"],
+)
+
+string_flag(
+    name = "elixir_home",
+    build_setting_default = "",
+    visibility = ["//visibility:public"],
+)
+
+platform(
+    name = "erlang_23_platform",
+    constraint_values = [
+        "@rules_erlang//:erlang_23",
+        "//:elixir_1_12",
+    ],
+    exec_properties = {
+        "OSFamily": "Linux",
+        # linux-rbe
+        "container-image": "docker://pivotalrabbitmq/rabbitmq-server-buildenv:linux-rbe",
+    },
+)
+
+platform(
+    name = "erlang_24_platform",
+    constraint_values = [
+        "@rules_erlang//:erlang_24",
+        "//:elixir_1_12",
+        # "@bazel_tools//tools/cpp:clang",
+    ],
+    exec_properties = {
+        "OSFamily": "Linux",
+        # linux-rbe
+        "container-image": "docker://pivotalrabbitmq/rabbitmq-server-buildenv:linux-rbe",
+    },
+)
+
+platform(
+    name = "erlang_25_platform",
+    constraint_values = [
+        "@rules_erlang//:erlang_25",
+        "//:elixir_1_12",
+    ],
+    exec_properties = {
+        "OSFamily": "Linux",
+        # linux-rbe
+        "container-image": "docker://pivotalrabbitmq/rabbitmq-server-buildenv:linux-rbe",
+    },
+)
+
+platform(
+    name = "erlang_external_platform",
+    constraint_values = [
+        "@rules_erlang//:erlang_external",
+        "//:elixir_external",
+        # "@platforms//os:macos",
+        # "@platforms//cpu:x86_64",
+        # "@bazel_tools//tools/cpp:clang",
+    ],
 )
 
 platform(
@@ -59,17 +112,17 @@ plt(
     visibility = ["//visibility:public"],
 )
 
+PLUGINS = all_plugins(
+    rabbitmq_workspace = "",
+)
+
 rabbitmq_home(
     name = "broker-home",
-    plugins = all_plugins(
-        erlang_installation = ERLANG_23_INSTALLATION,
-        rabbitmq_workspace = "",
-    ),
+    plugins = PLUGINS,
 )
 
 rabbitmq_run(
     name = "rabbitmq-run",
-    erlang_installation = ERLANG_23_INSTALLATION,
     home = ":broker-home",
     visibility = ["//visibility:public"],
 )
@@ -101,16 +154,10 @@ rabbitmqctl(
 
 shell(
     name = "repl",
-    erlang_installation = ERLANG_23_INSTALLATION,
-    deps = all_plugins(
-        erlang_installation = ERLANG_23_INSTALLATION,
-        rabbitmq_workspace = "",
-    ),
+    deps = PLUGINS,
 )
 
-packages_generic_unix(
-    erlang_installations = ERLANG_INSTALLATIONS,
-)
+package_generic_unix(PLUGINS)
 
 genrule(
     name = "test-logs",

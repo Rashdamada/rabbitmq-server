@@ -90,13 +90,11 @@ dialyze(
 
 broker_for_integration_suites()
 
-erlc(
+rabbitmq_test_helper(
     name = "rabbit_mgmt_runtime_parameters_util",
-    testonly = True,
     srcs = [
         "test/rabbit_mgmt_runtime_parameters_util.erl",
     ],
-    dest = "test",
     deps = [
         "//deps/rabbit_common:erlang_app",
     ],

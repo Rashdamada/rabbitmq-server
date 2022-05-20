@@ -13,12 +13,10 @@ load(
     "RabbitmqHomeInfo",
     "flatten",
     "link_escript",
-    "unique_versions",
 )
 load(
     ":rabbitmq.bzl",
     "APP_VERSION",
-    "all_plugins",
 )
 
 def _collect_licenses_impl(ctx):
@@ -167,10 +165,6 @@ def _plugins_dir(ctx, plugins):
 
 def _versioned_rabbitmq_home_impl(ctx):
     plugins = flat_deps(ctx.attr.plugins)
-
-    erlang_versions = unique_versions(plugins)
-    if len(erlang_versions) > 1:
-        fail("plugins do not have a unified erlang version", erlang_versions)
 
     scripts = [_copy_script(ctx, script) for script in ctx.files._scripts]
 

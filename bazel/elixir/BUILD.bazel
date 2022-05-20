@@ -26,9 +26,9 @@ toolchain(
     # exec_compatible_with = [
     #     "//:elixir_external",
     # ],
-    target_compatible_with = [
-        "//:elixir_external",
-    ],
+    # target_compatible_with = [
+    #     "//:elixir_external",
+    # ],
     toolchain = ":elixir_external",
     toolchain_type = ":toolchain_type",
     visibility = ["//visibility:public"],

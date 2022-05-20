@@ -23,6 +23,9 @@ ElixirInfo = provider(
 
 def _impl(ctx):
     # here build elixir
+    elixir_home = ctx.actions.declare_directory(ctx.label.name)
+    ebin = ctx.actions.declare_directory("ebin")
+
     return [
         DefaultInfo(),
         ctx.toolchains["@rules_erlang//tools:toolchain_type"].otpinfo,
@@ -33,7 +36,7 @@ def _impl(ctx):
         ErlangAppInfo(
             app_name = "elixir",
             include = [],
-            beam = [],  #[ebin],
+            beam = [ebin],
             priv = [],
             deps = [],
         ),
@@ -48,13 +51,15 @@ elixir_build = rule(
 )
 
 def _elixir_external_impl(ctx):
+    elixir_home = ctx.attr._elixir_home[BuildSettingInfo].value
+
     ebin = ctx.actions.declare_directory(path_join(ctx.attr.name, "ebin"))
 
     ctx.actions.run_shell(
         inputs = [],
         outputs = [ebin],
         command = "cp -R \"{elixir_home}\"/lib/elixir/ebin {ebin}".format(
-            elixir_home = ctx.attr.elixir_home,
+            elixir_home = elixir_home,
             ebin = ebin.dirname,
         ),
     )
@@ -67,7 +72,7 @@ def _elixir_external_impl(ctx):
         ctx.toolchains["@rules_erlang//tools:toolchain_type"].otpinfo,
         ElixirInfo(
             # release_dir = None,
-            elixir_home = ctx.attr.elixir_home,
+            elixir_home = elixir_home,
         ),
         ErlangAppInfo(
             app_name = "elixir",

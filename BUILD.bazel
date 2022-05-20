@@ -30,12 +30,6 @@ constraint_value(
     visibility = ["//visibility:public"],
 )
 
-constraint_value(
-    name = "elixir_external",
-    constraint_setting = ":elixir_version",
-    visibility = ["//visibility:public"],
-)
-
 string_flag(
     name = "elixir_home",
     build_setting_default = "",
@@ -80,17 +74,6 @@ platform(
         # linux-rbe
         "container-image": "docker://pivotalrabbitmq/rabbitmq-server-buildenv:linux-rbe",
     },
-)
-
-platform(
-    name = "erlang_external_platform",
-    constraint_values = [
-        "@rules_erlang//:erlang_external",
-        "//:elixir_external",
-        # "@platforms//os:macos",
-        # "@platforms//cpu:x86_64",
-        # "@bazel_tools//tools/cpp:clang",
-    ],
 )
 
 platform(

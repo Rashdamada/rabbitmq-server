@@ -20,8 +20,9 @@ def _impl(ctx):
             props = {
                 "name": name,
                 "url": url,
-                "strip_prefix": "foo",
+                "strip_prefix": "elixir-{}".format(release.version),
                 "sha256": release.sha256,
+                "version": release.version,
             }
             elixir_archives = merge_archive(props, elixir_archives)
 
@@ -32,8 +33,9 @@ def _impl(ctx):
     #         fail("elixir versions specified are not indexed properly: {}".format(name_index_map))
 
     for props in elixir_archives:
+        version = props.pop("version")
         http_archive(
-            build_file_content = ELIXIR_BUILD_FILE_CONTENT,
+            build_file_content = ELIXIR_BUILD_FILE_CONTENT.format(version = version),
             **props
         )
 
@@ -54,5 +56,5 @@ ELIXIR_BUILD_FILE_CONTENT = """load(
     "elixir_home",
 )
 
-elixir_home()
+elixir_home("{version}")
 """

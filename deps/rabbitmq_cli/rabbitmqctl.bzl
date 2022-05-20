@@ -61,10 +61,18 @@ def _impl(ctx):
 
     script = """set -euo pipefail
 
+{maybe_symlink_erlang}
+
+if [[ "{elixir_home}" == /* ]]; then
+    ABS_ELIXIR_HOME="{elixir_home}"
+else
+    ABS_ELIXIR_HOME=$PWD/{elixir_home}
+fi
+
 export LANG="en_US.UTF-8"
 export LC_ALL="en_US.UTF-8"
 
-export PATH="{elixir_home}"/bin:"{erlang_home}"/bin:${{PATH}}
+export PATH="$ABS_ELIXIR_HOME"/bin:"{erlang_home}"/bin:${{PATH}}
 
 MIX_INVOCATION_DIR="{mix_invocation_dir}"
 
@@ -91,9 +99,9 @@ cp ${{DEPS_DIR}}/rabbit_common/ebin/* \\
     _build/dev/lib/rabbit_common/ebin
 
 export ERL_COMPILER_OPTIONS=deterministic
-"{elixir_home}"/bin/mix local.hex --force
-"{elixir_home}"/bin/mix local.rebar --force
-"{elixir_home}"/bin/mix make_all_in_src_archive
+"$ABS_ELIXIR_HOME"/bin/mix local.hex --force
+"$ABS_ELIXIR_HOME"/bin/mix local.rebar --force
+"$ABS_ELIXIR_HOME"/bin/mix make_all_in_src_archive
 
 cd ${{OLDPWD}}
 cp ${{MIX_INVOCATION_DIR}}/escript/rabbitmqctl {escript_path}
@@ -106,6 +114,7 @@ rm -dR ${{MIX_INVOCATION_DIR}}
 mkdir ${{MIX_INVOCATION_DIR}}
 touch ${{MIX_INVOCATION_DIR}}/placeholder
     """.format(
+        maybe_symlink_erlang = maybe_symlink_erlang(ctx),
         erlang_home = erlang_home,
         elixir_home = elixir_home,
         mix_invocation_dir = mix_invocation_dir.path,
@@ -116,12 +125,16 @@ touch ${{MIX_INVOCATION_DIR}}/placeholder
         ebin_dir = ebin.path,
     )
 
-    inputs = []
-    inputs.extend(ctx.files.srcs)
-    for dep in ctx.attr.deps:
-        lib_info = dep[ErlangAppInfo]
-        inputs.extend(lib_info.include)
-        inputs.extend(lib_info.beam)
+    inputs = depset(
+        direct = ctx.files.srcs,
+        transitive = [
+            erlang_runfiles.files,
+            elixir_runfiles.files,
+        ] + [
+            depset(dep[ErlangAppInfo].include + dep[ErlangAppInfo].beam)
+            for dep in ctx.attr.deps
+        ],
+    )
 
     ctx.actions.run_shell(
         inputs = inputs,
@@ -137,6 +150,7 @@ touch ${{MIX_INVOCATION_DIR}}/placeholder
         [
             erlang_runfiles,
             elixir_runfiles,
+            ctx.runfiles(ctx.toolchains["//bazel/elixir:toolchain_type"].erlangapp.beam),
         ] + [
             dep[DefaultInfo].default_runfiles
             for dep in deps

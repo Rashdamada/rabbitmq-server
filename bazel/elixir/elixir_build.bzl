@@ -18,20 +18,77 @@ load(
 
 ElixirInfo = provider(
     doc = "A Home directory of a built Elixir",
-    fields = ["elixir_home"],
+    fields = ["release_dir", "elixir_home"],
 )
 
+def _find_root(sources):
+    dirs = [s.dirname for s in sources]
+    root = dirs[0]
+    for d in dirs:
+        if d == "":
+            fail("unexpectedly empty dirname")
+        if root.startswith(d):
+            root = d
+        elif d.startswith(root):
+            pass
+        else:
+            fail("{} and {} do not share a common root".format(d, root))
+    return root
+
 def _impl(ctx):
-    # here build elixir
-    elixir_home = ctx.actions.declare_directory(ctx.label.name)
+    release_dir = ctx.actions.declare_directory(ctx.label.name + "_release")
+    build_dir = ctx.actions.declare_directory(ctx.label.name + "_build")
     ebin = ctx.actions.declare_directory("ebin")
 
+    (erlang_home, _, runfiles) = erlang_dirs(ctx)
+
+    inputs = depset(
+        direct = ctx.files.sources,
+        transitive = [runfiles.files],
+    )
+
+    ctx.actions.run_shell(
+        inputs = inputs,
+        outputs = [release_dir, build_dir, ebin],
+        command = """set -euo pipefail
+
+{maybe_symlink_erlang}
+
+export PATH="{erlang_home}"/bin:${{PATH}}
+
+ABS_BUILD_DIR=$PWD/{build_path}
+ABS_RELEASE_DIR=$PWD/{release_path}
+ABS_EBIN_DIR=$PWD/{ebin_path}
+
+cp -rp {source_path}/* $ABS_BUILD_DIR
+
+cd $ABS_BUILD_DIR
+
+make
+
+cp -r bin $ABS_RELEASE_DIR/
+cp -r lib $ABS_RELEASE_DIR/
+cp -r lib/elixir/ebin/* $ABS_EBIN_DIR/
+""".format(
+            maybe_symlink_erlang = maybe_symlink_erlang(ctx),
+            erlang_home = erlang_home,
+            source_path = _find_root(ctx.files.sources),
+            build_path = build_dir.path,
+            release_path = release_dir.path,
+            ebin_path = ebin.path,
+        ),
+        mnemonic = "ELIXIR",
+        progress_message = "Compiling elixir from source",
+    )
+
     return [
-        DefaultInfo(),
+        DefaultInfo(
+            files = depset([release_dir, ebin]),
+        ),
         ctx.toolchains["@rules_erlang//tools:toolchain_type"].otpinfo,
         ElixirInfo(
-            # release_dir = None,
-            elixir_home = ctx.attr.elixir_home,
+            release_dir = release_dir,
+            elixir_home = None,
         ),
         ErlangAppInfo(
             app_name = "elixir",
@@ -67,11 +124,10 @@ def _elixir_external_impl(ctx):
     return [
         DefaultInfo(
             files = depset([ebin]),
-            runfiles = ctx.runfiles([ebin]),
         ),
         ctx.toolchains["@rules_erlang//tools:toolchain_type"].otpinfo,
         ElixirInfo(
-            # release_dir = None,
+            release_dir = None,
             elixir_home = elixir_home,
         ),
         ErlangAppInfo(

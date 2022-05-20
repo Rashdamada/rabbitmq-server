@@ -76,7 +76,7 @@ otp_github_release(
 register_toolchains(
     "@otp_23.3.4.14//:erlang_linux_toolchain",
     "@otp_24.3.4//:erlang_linux_toolchain",
-    # "@elixir_1.12.2//:elixir_linux_toolchain",
+    "@elixir_1.12.2//:elixir_linux_toolchain",
 )
 
 load("//:workspace_helpers.bzl", "rabbitmq_external_deps")

@@ -28,16 +28,24 @@ def _impl(ctx):
     erl_libs_path = path_join(package_dir, erl_libs_dir)
 
     (erlang_home, _, erlang_runfiles) = erlang_dirs(ctx)
-    (elixir_home, elixir_runfiles) = elixir_dirs(ctx)
+    (elixir_home, elixir_runfiles) = elixir_dirs(ctx, short_path = True)
 
     if not ctx.attr.is_windows:
         output = ctx.actions.declare_file(ctx.label.name)
         script = """set -euo pipefail
 
+{maybe_symlink_erlang}
+
+if [[ "{elixir_home}" == /* ]]; then
+    ABS_ELIXIR_HOME="{elixir_home}"
+else
+    ABS_ELIXIR_HOME=$PWD/{elixir_home}
+fi
+
 export LANG="en_US.UTF-8"
 export LC_ALL="en_US.UTF-8"
 
-export PATH="{elixir_home}"/bin:"{erlang_home}"/bin:${{PATH}}
+export PATH="$ABS_ELIXIR_HOME"/bin:"{erlang_home}"/bin:${{PATH}}
 
 INITIAL_DIR=${{PWD}}
 
@@ -53,14 +61,14 @@ export HOME=${{PWD}}
 export DEPS_DIR=$TEST_SRCDIR/$TEST_WORKSPACE/{erl_libs_path}
 export ERL_COMPILER_OPTIONS=deterministic
 export MIX_ENV=test mix dialyzer
-"{elixir_home}"/bin/mix local.hex --force
-"{elixir_home}"/bin/mix local.rebar --force
-"{elixir_home}"/bin/mix make_all
+"$ABS_ELIXIR_HOME"/bin/mix local.hex --force
+"$ABS_ELIXIR_HOME"/bin/mix local.rebar --force
+"$ABS_ELIXIR_HOME"/bin/mix make_all
 
 # due to https://github.com/elixir-lang/elixir/issues/7699 we
 # "run" the tests, but skip them all, in order to trigger
 # compilation of all *_test.exs files before we actually run them
-"{elixir_home}"/bin/mix test --exclude test
+"$ABS_ELIXIR_HOME"/bin/mix test --exclude test
 
 export TEST_TMPDIR=${{TEST_UNDECLARED_OUTPUTS_DIR}}
 
@@ -81,8 +89,9 @@ export ERL_LIBS=$DEPS_DIR
 # run the actual tests
 set +u
 set -x
-"{elixir_home}"/bin/mix test --trace --max-failures 1 ${{TEST_FILE}}
+"$ABS_ELIXIR_HOME"/bin/mix test --trace --max-failures 1 ${{TEST_FILE}}
     """.format(
+            maybe_symlink_erlang = maybe_symlink_erlang(ctx, short_path = True),
             erlang_home = erlang_home,
             elixir_home = elixir_home,
             package_dir = package_dir,
@@ -92,7 +101,6 @@ set -x
     else:
         output = ctx.actions.declare_file(ctx.label.name + ".bat")
         script = """@echo off
-echo Erlang Version: {erlang_version}
 
 :: set LANG="en_US.UTF-8"
 :: set LC_ALL="en_US.UTF-8"

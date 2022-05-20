@@ -3,8 +3,22 @@ load("@bazel_tools//tools/build_defs/repo:git.bzl", "git_repository", "new_git_r
 load("@rules_erlang//:github.bzl", "github_erlang_app")
 load("@rules_erlang//:hex_archive.bzl", "hex_archive")
 load("@rules_erlang//:hex_pm.bzl", "hex_pm_erlang_app")
+load("//bazel/bzlmod:extensions.bzl", "ELIXIR_BUILD_FILE_CONTENT")
 
 def rabbitmq_external_deps(rabbitmq_workspace = "@rabbitmq-server"):
+    elixir_version = "1.12.2"
+    elixir_sha256 = "32bf6f603156677b06e2d9faf2bf6b0d954b60440600ad7b64e1b5de49065196"
+    http_archive(
+        name = "elixir_{}".format(elixir_version),
+        url = "https://github.com/elixir-lang/elixir/archive/refs/tags/v{}.zip".format(elixir_version),
+        strip_prefix = "elixir-{}".format(elixir_version),
+        sha256 = elixir_sha256,
+        build_file_content = ELIXIR_BUILD_FILE_CONTENT.format(version = elixir_version),
+        repo_mapping = {
+            "@rabbitmq-server": rabbitmq_workspace,
+        },
+    )
+
     hex_pm_erlang_app(
         name = "accept",
         version = "0.3.5",

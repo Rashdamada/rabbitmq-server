@@ -1,12 +1,12 @@
 load(
-    "@bazel_skylib//rules:common_settings.bzl",
-    "BuildSettingInfo",
+    "@rules_erlang//tools:erlang_toolchain.bzl",
+    "erlang_dirs",
 )
 
 def _impl(ctx):
     out = ctx.actions.declare_file(ctx.label.name)
 
-    erlang_home = ctx.attr._erlang_home[BuildSettingInfo].value
+    (erlang_home, _) = erlang_dirs(ctx)
 
     ctx.actions.write(
         output = out,
@@ -35,7 +35,7 @@ plt_path: bazel-bin/deps/rabbit/.base_plt.plt
 
 erlang_ls_config = rule(
     implementation = _impl,
-    attrs = {
-        "_erlang_home": attr.label(default = Label("@rules_erlang//:erlang_home")),
-    },
+    toolchains = [
+        "@rules_erlang//tools:toolchain_type",
+    ],
 )

@@ -40,7 +40,7 @@ elixir = use_extension(
 
 elixir.elixir_github_release(
     version = "1.12.2",
-    sha256 = "",
+    sha256 = "32bf6f603156677b06e2d9faf2bf6b0d954b60440600ad7b64e1b5de49065196",
 )
 
 erlang_package.hex_package(

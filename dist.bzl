@@ -80,9 +80,13 @@ def _plugins_dir(ctx, plugins):
 
     (erlang_home, _, runfiles) = erlang_dirs(ctx)
 
-    inputs = []
+    inputs = runfiles.files.to_list()
 
-    commands = ["set -euo pipefail", ""]
+    commands = [
+        "set -euo pipefail",
+        "",
+        maybe_symlink_erlang(ctx),
+    ]
 
     for plugin in plugins:
         lib_info = plugin[ErlangAppInfo]

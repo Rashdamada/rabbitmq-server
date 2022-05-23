@@ -6,17 +6,10 @@ load("@rules_erlang//:hex_pm.bzl", "hex_pm_erlang_app")
 load("//bazel/bzlmod:extensions.bzl", "ELIXIR_BUILD_FILE_CONTENT")
 
 def rabbitmq_external_deps(rabbitmq_workspace = "@rabbitmq-server"):
-    elixir_version = "1.12.2"
-    elixir_sha256 = "32bf6f603156677b06e2d9faf2bf6b0d954b60440600ad7b64e1b5de49065196"
-    http_archive(
-        name = "elixir_{}".format(elixir_version),
-        url = "https://github.com/elixir-lang/elixir/archive/refs/tags/v{}.zip".format(elixir_version),
-        strip_prefix = "elixir-{}".format(elixir_version),
-        sha256 = elixir_sha256,
-        build_file_content = ELIXIR_BUILD_FILE_CONTENT.format(version = elixir_version),
-        repo_mapping = {
-            "@rabbitmq-server": rabbitmq_workspace,
-        },
+    elixir(
+        version = "1.12.2",
+        sha256 = "32bf6f603156677b06e2d9faf2bf6b0d954b60440600ad7b64e1b5de49065196",
+        rabbitmq_workspace = rabbitmq_workspace,
     )
 
     hex_pm_erlang_app(
@@ -264,6 +257,21 @@ erlang_app(
         remote = "https://github.com/rabbitmq/trust-store-http.git",
         branch = "master",
         build_file = rabbitmq_workspace + "//:BUILD.trust_store_http",
+    )
+
+def elixir(
+        version = None,
+        sha256 = None,
+        rabbitmq_workspace = "@rabbitmq-server"):
+    http_archive(
+        name = "elixir_{}".format(version),
+        url = "https://github.com/elixir-lang/elixir/archive/refs/tags/v{}.zip".format(version),
+        strip_prefix = "elixir-{}".format(version),
+        sha256 = sha256,
+        build_file_content = ELIXIR_BUILD_FILE_CONTENT,
+        repo_mapping = {
+            "@rabbitmq-server": rabbitmq_workspace,
+        },
     )
 
 RA_INJECT_GIT_VERSION = """

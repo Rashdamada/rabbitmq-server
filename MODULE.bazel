@@ -24,13 +24,11 @@ erlang_package = use_extension(
 erlang_package.otp_github_release(
     version = "24.3.4",
     sha256 = "76fcca5ba6f11eb9caac32bf053badc46b5d66f867150eef077f4f0d7944ecd7",
-    major_version = 24,
 )
 
 erlang_package.otp_github_release(
     version = "23.3.4.14",
     sha256 = "35123f366ded534775a05db8ad6c06c20519ae228af1b5952132b10845621f21",
-    major_version = 23,
 )
 
 elixir = use_extension(
@@ -284,7 +282,6 @@ use_repo(
     erlang_package,
     "otp_24.3.4",
     "otp_23.3.4.14",
-    "elixir_1.12.2",
     "accept",
     "aten",
     "base64url",
@@ -315,4 +312,9 @@ use_repo(
     "sysmon_handler",
     "systemd",
     "trust_store_http",
+)
+
+use_repo(
+    elixir,
+    "elixir_1.12.2",
 )

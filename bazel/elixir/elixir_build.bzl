@@ -7,14 +7,6 @@ load(
     "erlang_dirs",
     "maybe_symlink_erlang",
 )
-load(
-    "@rules_erlang//:erlang_app_info.bzl",
-    "ErlangAppInfo",
-)
-load(
-    "@rules_erlang//:util.bzl",
-    "path_join",
-)
 
 ElixirInfo = provider(
     doc = "A Home directory of a built Elixir",
@@ -38,7 +30,6 @@ def _find_root(sources):
 def _impl(ctx):
     release_dir = ctx.actions.declare_directory(ctx.label.name + "_release")
     build_dir = ctx.actions.declare_directory(ctx.label.name + "_build")
-    ebin = ctx.actions.declare_directory("ebin")
 
     (erlang_home, _, runfiles) = erlang_dirs(ctx)
 
@@ -49,7 +40,7 @@ def _impl(ctx):
 
     ctx.actions.run_shell(
         inputs = inputs,
-        outputs = [release_dir, build_dir, ebin],
+        outputs = [release_dir, build_dir],
         command = """set -euo pipefail
 
 {maybe_symlink_erlang}
@@ -58,7 +49,6 @@ export PATH="{erlang_home}"/bin:${{PATH}}
 
 ABS_BUILD_DIR=$PWD/{build_path}
 ABS_RELEASE_DIR=$PWD/{release_path}
-ABS_EBIN_DIR=$PWD/{ebin_path}
 
 cp -rp {source_path}/* $ABS_BUILD_DIR
 
@@ -68,14 +58,12 @@ make
 
 cp -r bin $ABS_RELEASE_DIR/
 cp -r lib $ABS_RELEASE_DIR/
-cp -r lib/elixir/ebin/* $ABS_EBIN_DIR/
 """.format(
             maybe_symlink_erlang = maybe_symlink_erlang(ctx),
             erlang_home = erlang_home,
             source_path = _find_root(ctx.files.sources),
             build_path = build_dir.path,
             release_path = release_dir.path,
-            ebin_path = ebin.path,
         ),
         mnemonic = "ELIXIR",
         progress_message = "Compiling elixir from source",
@@ -83,19 +71,12 @@ cp -r lib/elixir/ebin/* $ABS_EBIN_DIR/
 
     return [
         DefaultInfo(
-            files = depset([release_dir, ebin]),
+            files = depset([release_dir]),
         ),
         ctx.toolchains["@rules_erlang//tools:toolchain_type"].otpinfo,
         ElixirInfo(
             release_dir = release_dir,
             elixir_home = None,
-        ),
-        ErlangAppInfo(
-            app_name = "elixir",
-            include = [],
-            beam = [ebin],
-            priv = [],
-            deps = [],
         ),
     ]
 
@@ -110,32 +91,34 @@ elixir_build = rule(
 def _elixir_external_impl(ctx):
     elixir_home = ctx.attr._elixir_home[BuildSettingInfo].value
 
-    ebin = ctx.actions.declare_directory(path_join(ctx.attr.name, "ebin"))
+    status_file = ctx.actions.declare_file(ctx.label.name + "_status")
 
     ctx.actions.run_shell(
         inputs = [],
-        outputs = [ebin],
-        command = "cp -R \"{elixir_home}\"/lib/elixir/ebin {ebin}".format(
+        outputs = [status_file],
+        command = """set -euo pipefail
+
+if [ -n "{elixir_home}" ]; then
+    "{elixir_home}"/bin/iex --version >> {status_path}
+else
+    echo "none" >> {status_path}
+fi
+""".format(
             elixir_home = elixir_home,
-            ebin = ebin.dirname,
+            status_path = status_file.path,
         ),
+        mnemonic = "ELIXIR",
+        progress_message = "Validating elixir at {}".format(elixir_home),
     )
 
     return [
         DefaultInfo(
-            files = depset([ebin]),
+            files = depset([status_file]),
         ),
         ctx.toolchains["@rules_erlang//tools:toolchain_type"].otpinfo,
         ElixirInfo(
             release_dir = None,
             elixir_home = elixir_home,
-        ),
-        ErlangAppInfo(
-            app_name = "elixir",
-            include = [],
-            beam = [ebin],
-            priv = [],
-            deps = [],
         ),
     ]
 

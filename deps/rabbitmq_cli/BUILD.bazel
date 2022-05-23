@@ -4,12 +4,6 @@ load("//:rabbitmq_home.bzl", "rabbitmq_home")
 load("//:rabbitmq_run.bzl", "rabbitmq_run")
 load("//:rabbitmq.bzl", "STARTS_BACKGROUND_BROKER_TAG")
 
-# This rule simply exposes elixir as a runtime lib for tests in erlang
-# elixir(
-#     name = "elixir_app",
-#     visibility = ["//visibility:public"],
-# )
-
 # Note: All the various rabbitmq-* scripts are just copies of rabbitmqctl
 rabbitmqctl(
     name = "rabbitmqctl",

@@ -6,7 +6,7 @@ load(
 def _impl(ctx):
     out = ctx.actions.declare_file(ctx.label.name)
 
-    (erlang_home, _) = erlang_dirs(ctx)
+    (erlang_home, _, _) = erlang_dirs(ctx)
 
     ctx.actions.write(
         output = out,

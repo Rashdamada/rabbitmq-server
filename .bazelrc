@@ -20,18 +20,24 @@ build:rbe --spawn_strategy=remote
 build:rbe --test_strategy=""
 build:rbe --jobs=100
 
-# build:rbe --crosstool_top=@buildbuddy_toolchain//:toolchain
-# build:rbe --extra_toolchains=@buildbuddy_toolchain//:cc_toolchain
+build:rbe --crosstool_top=@rbe//cc:toolchain
+build:rbe --extra_toolchains=@rbe//config:cc-toolchain
+
+build:rbe --host_platform=@rbe//config:platform
+build:rbe --platforms=@rbe//config:platform
+build:rbe --extra_execution_platforms=@rbe//config:platform
+
+build:rbe --host_cpu=k8
+build:rbe --cpu=k8
+
+build:rbe-23 --config=rbe
+build:rbe-23 --extra_toolchains=@otp_23.3.4.14//:erlang_toolchain
+build:rbe-23 --extra_toolchains=@elixir_1.12.2//:elixir_toolchain
 
 build:rbe-24 --config=rbe
-build:rbe-24 --extra_execution_platforms=//:erlang_24_platform
-build:rbe-24 --platforms=//:erlang_24_platform
+build:rbe-24 --extra_toolchains=@otp_24.3.4//:erlang_toolchain
+build:rbe-24 --extra_toolchains=@elixir_1.12.2//:elixir_toolchain
 
-# build:local --crosstool_top=@bazel_tools//tools/cpp:toolchain
-# build:local --extra_toolchains=@buildbuddy_toolchain//:cc_toolchain
-# build:local --extra_toolchains=@bazel_tools//tools/cpp:toolchain
-# build:local --extra_execution_platforms=//:erlang_external_platform
-# build:local --platforms=//:erlang_external_platform
 build:local --extra_toolchains=@rules_erlang//tools:erlang_external_toolchain
 build:local --extra_toolchains=//bazel/elixir:elixir_external_toolchain
 

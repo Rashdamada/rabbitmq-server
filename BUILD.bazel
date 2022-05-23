@@ -22,72 +22,10 @@ config_setting(
     },
 )
 
-constraint_setting(name = "elixir_version")
-
-constraint_value(
-    name = "elixir_1_12",
-    constraint_setting = ":elixir_version",
-    visibility = ["//visibility:public"],
-)
-
 string_flag(
     name = "elixir_home",
     build_setting_default = "",
     visibility = ["//visibility:public"],
-)
-
-platform(
-    name = "erlang_23_platform",
-    constraint_values = [
-        "@rules_erlang//:erlang_23",
-        "//:elixir_1_12",
-    ],
-    exec_properties = {
-        "OSFamily": "Linux",
-        # linux-rbe
-        "container-image": "docker://pivotalrabbitmq/rabbitmq-server-buildenv:linux-rbe",
-    },
-)
-
-platform(
-    name = "erlang_24_platform",
-    constraint_values = [
-        "@rules_erlang//:erlang_24",
-        "//:elixir_1_12",
-        # "@bazel_tools//tools/cpp:clang",
-    ],
-    exec_properties = {
-        "OSFamily": "Linux",
-        # linux-rbe
-        "container-image": "docker://pivotalrabbitmq/rabbitmq-server-buildenv:linux-rbe",
-    },
-)
-
-platform(
-    name = "erlang_25_platform",
-    constraint_values = [
-        "@rules_erlang//:erlang_25",
-        "//:elixir_1_12",
-    ],
-    exec_properties = {
-        "OSFamily": "Linux",
-        # linux-rbe
-        "container-image": "docker://pivotalrabbitmq/rabbitmq-server-buildenv:linux-rbe",
-    },
-)
-
-platform(
-    name = "erlang_git_platform",
-    constraint_values = [
-        "@platforms//os:linux",
-        "@platforms//cpu:x86_64",
-        "@bazel_tools//tools/cpp:clang",
-    ],
-    exec_properties = {
-        "OSFamily": "Linux",
-        # linux-erlang-git-master
-        "container-image": "docker://pivotalrabbitmq/rabbitmq-server-buildenv@sha256:5d4fa38f723186668a497a8ee57e22010187e9347add5d4a7cc199dc13f1493f",
-    },
 )
 
 plt(

@@ -150,7 +150,6 @@ touch ${{MIX_INVOCATION_DIR}}/placeholder
         [
             erlang_runfiles,
             elixir_runfiles,
-            ctx.runfiles(ctx.toolchains["//bazel/elixir:toolchain_type"].erlangapp.beam),
         ] + [
             dep[DefaultInfo].default_runfiles
             for dep in deps

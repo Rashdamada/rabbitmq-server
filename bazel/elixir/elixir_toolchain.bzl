@@ -3,10 +3,6 @@ load(
     "OtpInfo",
 )
 load(
-    "@rules_erlang//:erlang_app_info.bzl",
-    "ErlangAppInfo",
-)
-load(
     ":elixir_build.bzl",
     "ElixirInfo",
 )
@@ -15,7 +11,6 @@ def _impl(ctx):
     toolchain_info = platform_common.ToolchainInfo(
         otpinfo = ctx.attr.elixir[OtpInfo],
         elixirinfo = ctx.attr.elixir[ElixirInfo],
-        erlangapp = ctx.attr.elixir[ErlangAppInfo],
     )
     return [toolchain_info]
 
@@ -24,7 +19,7 @@ elixir_toolchain = rule(
     attrs = {
         "elixir": attr.label(
             mandatory = True,
-            providers = [OtpInfo, ElixirInfo, ErlangAppInfo],
+            providers = [OtpInfo, ElixirInfo],
         ),
     },
     provides = [platform_common.ToolchainInfo],

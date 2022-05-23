@@ -113,7 +113,7 @@ jobs:
       - name: Expand generic-unix-package
         working-directory: packaging/docker-image
         run: |
-          xzcat ${GENERIC_UNIX_ARCHIVE} | tar xvf -
+          xzcat ${{ steps.resolve-artifact-path.outputs.ARTIFACT_PATH }} | tar xvf -
 
       - name: Compute image tags
         id: compute-tags

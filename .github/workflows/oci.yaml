@@ -62,6 +62,8 @@ jobs:
             build:buildbuddy --color=yes
             build:buildbuddy --disk_cache=
 
+            build:buildbuddy --remote_download_toplevel
+
             build --extra_toolchains=@otp_${{ matrix.erlang_major }}//:erlang_toolchain
             build --extra_toolchains=@elixir_${{ matrix.elixir_version }}//:elixir_toolchain
           EOF

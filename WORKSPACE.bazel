@@ -114,7 +114,6 @@ http_archive(
     build_file = "@//:BUILD.package_generic_unix",
     patch_cmds = [ADD_PLUGINS_DIR_BUILD_FILE],
     repo_mapping = {
-        # "@rabbitmq-server": "@",
         "@inet_tcp_proxy_dist": "@rules_erlang.erlang_package.inet_tcp_proxy_dist",
     },
     sha256 = "4672fad92a815b879cc78a5a9fd28445152b61745d68acd50432c15f96792171",

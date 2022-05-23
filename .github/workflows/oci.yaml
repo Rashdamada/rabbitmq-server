@@ -73,7 +73,10 @@ jobs:
 
       - name: Check for otp version match
         run: |
-          grep "otp_${{ steps.load-info.outputs.otp }}" MODULE.bazel
+          bazelisk build :otp_version
+          if [ ! "$(cat bazel-bin/actual_version.txt)" == "${{ steps.load-info.outputs.otp }}" ]; then
+            exit 1
+          fi
 
       - name: Build generic unix package
         run: |

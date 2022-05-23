@@ -67,13 +67,13 @@ load(
 rules_erlang_dependencies()
 
 otp_github_release(
-    name = "otp_23.3.4.14",
+    name = "otp_23",
     sha256 = "35123f366ded534775a05db8ad6c06c20519ae228af1b5952132b10845621f21",
     version = "23.3.4.14",
 )
 
 otp_github_release(
-    name = "otp_24.3.4",
+    name = "otp_24",
     sha256 = "76fcca5ba6f11eb9caac32bf053badc46b5d66f867150eef077f4f0d7944ecd7",
     version = "24.3.4",
 )

@@ -30,32 +30,14 @@ jobs:
           image_tag_suffix:
             - otp-min
             - otp-max
-            #! - otp-rc
           include:
             - image_tag_suffix: otp-min
-              skip_otp_verify: false
+              bazel_config: rbe-24
             - image_tag_suffix: otp-max
-              skip_otp_verify: false
-            #! - image_tag_suffix: otp-rc
-            #!   skip_otp_verify: true
+              bazel_config: rbe-25
     steps:
       - name: Checkout
         uses: actions/checkout@v3
-
-      - name: Load version info
-        id: load-info
-        run: |
-          FILE=packaging/docker-image/otp-versions/${{ matrix.image_tag_suffix }}.yaml
-          echo "::set-output name=otp::$(yq eval '.otp' $FILE)"
-          echo "::set-output name=otp_sha256::$(yq eval '.otp_sha256' $FILE)"
-          echo "::set-output name=elixir::$(yq eval '.elixir' $FILE)"
-
-      - name: Set up Erlang & Elixir
-        uses: erlef/setup-beam@v1.11
-        with:
-          otp-version: ${{ steps.load-info.outputs.otp }}
-          elixir-version: ${{ steps.load-info.outputs.elixir }}
-          version-type: strict
 
       - name: MOUNT BAZEL CACHE
         uses: actions/cache@v3.0.2
@@ -65,8 +47,6 @@ jobs:
 
       - name: CONFIGURE BAZEL
         run: |
-          ERLANG_HOME="$(dirname $(dirname $(which erl)))"
-          ELIXIR_HOME="$(dirname $(dirname $(which iex)))"
           if [ -n "${{ secrets.BUILDBUDDY_API_KEY }}" ]; then
           cat << EOF >> user.bazelrc
             build:buildbuddy --remote_header=x-buildbuddy-api-key=${{ secrets.BUILDBUDDY_API_KEY }}
@@ -79,16 +59,13 @@ jobs:
             build:buildbuddy --repository_cache=/home/runner/repo-cache/
             build:buildbuddy --color=yes
             build:buildbuddy --disk_cache=
-
-            build --@rules_erlang//:erlang_version=${{ steps.load-info.outputs.otp }}
-            build --@rules_erlang//:erlang_home=${ERLANG_HOME}
-            build --//:elixir_home=${ELIXIR_HOME}
           EOF
 
       - name: Build generic unix package
         run: |
           sed -i"_orig" -E '/APP_VERSION/ s/3\.[0-9]+\.[0-9]+/${{ github.sha }}/' rabbitmq.bzl
-          bazelisk build :package-generic-unix
+          bazelisk build :package-generic-unix \
+            --config=${{ matrix.bazel_config }}
 
       - name: Resolve generic unix package path
         run: |

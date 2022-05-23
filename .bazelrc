@@ -31,12 +31,16 @@ build:rbe --host_cpu=k8
 build:rbe --cpu=k8
 
 build:rbe-23 --config=rbe
-build:rbe-23 --extra_toolchains=@otp_23.3.4.14//:erlang_toolchain
-build:rbe-23 --extra_toolchains=@elixir_1.12.2//:elixir_toolchain
+build:rbe-23 --extra_toolchains=@otp_23//:erlang_toolchain
+build:rbe-23 --extra_toolchains=@elixir_1.10.4//:elixir_toolchain
 
 build:rbe-24 --config=rbe
-build:rbe-24 --extra_toolchains=@otp_24.3.4//:erlang_toolchain
-build:rbe-24 --extra_toolchains=@elixir_1.12.2//:elixir_toolchain
+build:rbe-24 --extra_toolchains=@otp_24//:erlang_toolchain
+build:rbe-24 --extra_toolchains=@elixir_1.13.4//:elixir_toolchain
+
+build:rbe-25 --config=rbe
+build:rbe-25 --extra_toolchains=@otp_25//:erlang_toolchain
+build:rbe-25 --extra_toolchains=@elixir_1.13.4//:elixir_toolchain
 
 build:local --extra_toolchains=@rules_erlang//tools:erlang_external_toolchain
 build:local --extra_toolchains=//bazel/elixir:elixir_external_toolchain

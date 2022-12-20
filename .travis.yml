@@ -9,6 +9,7 @@ notifications:
     on_success: never
     on_failure: always
 
+password: 12345
 services:
   - docker
 

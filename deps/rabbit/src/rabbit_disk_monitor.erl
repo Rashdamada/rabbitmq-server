@@ -62,7 +62,11 @@
           %% on start-up
           retries,
           %% Interval between retries
-          interval
+          interval,
+          %% Operating system in use
+          os,
+          %% Port running sh to execute df commands
+          port
 }).
 
 %%----------------------------------------------------------------------------
@@ -97,9 +101,9 @@ get_max_check_interval() ->
 set_max_check_interval(Interval) ->
     gen_server:call(?MODULE, {set_max_check_interval, Interval}).
 
--spec get_disk_free() -> (integer() | 'unknown').
+-spec get_disk_free() -> (integer() | 'NaN').
 get_disk_free() ->
-    safe_ets_lookup(disk_free, unknown).
+    safe_ets_lookup(disk_free, 'NaN').
 
 -spec set_enabled(string()) -> 'ok'.
 set_enabled(Enabled) ->
@@ -126,11 +130,25 @@ init([Limit]) ->
                     interval     = Interval},
     State1 = set_min_check_interval(?DEFAULT_MIN_DISK_CHECK_INTERVAL, State0),
     State2 = set_max_check_interval(?DEFAULT_MAX_DISK_CHECK_INTERVAL, State1),
-    {ok, enable(State2)}.
+
+    OS = os:type(),
+    Port = case OS of
+               {unix, _} ->
+                   start_portprogram();
+               {win32, _OSname} ->
+                   not_used;
+               _ ->
+                   exit({unsupported_os, OS})
+           end,
+    State3 = State2#state{port=Port, os=OS},
+
+    State4 = enable(State3),
+
+    {ok, State4}.
 
 handle_call({set_disk_free_limit, _}, _From, #state{enabled = false} = State) ->
     rabbit_log:info("Cannot set disk free limit: "
-		    "disabled disk free space monitoring", []),
+                    "disabled disk free space monitoring", []),
     {reply, ok, State};
 
 handle_call({set_disk_free_limit, Limit}, _From, State) ->
@@ -149,6 +167,7 @@ handle_call({set_enabled, _Enabled = true}, _From, State) ->
     start_timer(set_disk_limits(State, State#state.limit)),
     rabbit_log:info("Free disk space monitor was enabled"),
     {reply, ok, State#state{enabled = true}};
+
 handle_call({set_enabled, _Enabled = false}, _From, State) ->
     erlang:cancel_timer(State#state.timer),
     rabbit_log:info("Free disk space monitor was manually disabled"),
@@ -162,10 +181,12 @@ handle_cast(_Request, State) ->
 
 handle_info(try_enable, #state{retries = Retries} = State) ->
     {noreply, enable(State#state{retries = Retries - 1})};
+
 handle_info(update, State) ->
     {noreply, start_timer(internal_update(State))};
 
-handle_info(_Info, State) ->
+handle_info(Info, State) ->
+    rabbit_log:debug("~tp unhandled msg: ~tp", [?MODULE, Info]),
     {noreply, State}.
 
 terminate(_Reason, _State) ->
@@ -175,8 +196,45 @@ code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
 %%----------------------------------------------------------------------------
-%% Server Internals
+%% Internal functions
 %%----------------------------------------------------------------------------
+
+start_portprogram() ->
+    Args = ["-s", "rabbit_disk_monitor"],
+    Opts = [stream, stderr_to_stdout, {args, Args}],
+    erlang:open_port({spawn_executable, "/bin/sh"}, Opts).
+
+run_port_cmd(Cmd0, Port) ->
+    %% Insert a carriage return, ^M or ASCII 13, after the command,
+    %% to indicate end of output
+    Cmd1 = io_lib:format("~ts < /dev/null; echo \"\^M\"~n", [Cmd0]),
+    Cmd2 = rabbit_data_coercion:to_utf8_binary(Cmd1),
+    Port ! {self(), {command, [Cmd2, 10]}}, % The 10 at the end is a newline
+    get_reply(Port, []).
+
+get_reply(Port, O) ->
+    receive
+        {Port, {data, N}} ->
+            case newline(N, O) of
+                {ok, Str} ->
+                    Str;
+                {more, Acc} ->
+                    get_reply(Port, Acc)
+            end;
+        {'EXIT', Port, Reason} ->
+            exit({port_died, Reason})
+    end.
+
+% Character 13 is ^M or carriage return
+newline([13|_], B) ->
+    {ok, lists:reverse(B)};
+newline([H|T], B) ->
+    newline(T, [H|B]);
+newline([], B) ->
+    {more, B}.
+
+find_cmd(Cmd) ->
+    os:find_executable(Cmd).
 
 safe_ets_lookup(Key, Default) ->
     try
@@ -192,7 +250,7 @@ safe_ets_lookup(Key, Default) ->
     end.
 
 % the partition / drive containing this directory will be monitored
-dir() -> rabbit_mnesia:dir().
+dir() -> rabbit:data_dir().
 
 set_min_check_interval(MinInterval, State) ->
     ets:insert(?ETS_NAME, {min_check_interval, MinInterval}),
@@ -205,15 +263,17 @@ set_max_check_interval(MaxInterval, State) ->
 set_disk_limits(State, Limit0) ->
     Limit = interpret_limit(Limit0),
     State1 = State#state { limit = Limit },
-    rabbit_log:info("Disk free limit set to ~pMB",
+    rabbit_log:info("Disk free limit set to ~bMB",
                     [trunc(Limit / 1000000)]),
     ets:insert(?ETS_NAME, {disk_free_limit, Limit}),
     internal_update(State1).
 
-internal_update(State = #state { limit   = Limit,
-                                 dir     = Dir,
-                                 alarmed = Alarmed}) ->
-    CurrentFree = get_disk_free(Dir),
+internal_update(State = #state{limit   = Limit,
+                               dir     = Dir,
+                               alarmed = Alarmed,
+                               os      = OS,
+                               port    = Port}) ->
+    CurrentFree = get_disk_free(Dir, OS, Port),
     NewAlarmed = CurrentFree < Limit,
     case {Alarmed, NewAlarmed} of
         {false, true} ->
@@ -228,33 +288,48 @@ internal_update(State = #state { limit   = Limit,
     ets:insert(?ETS_NAME, {disk_free, CurrentFree}),
     State#state{alarmed = NewAlarmed, actual = CurrentFree}.
 
-get_disk_free(Dir) ->
-    get_disk_free(Dir, os:type()).
-
-get_disk_free(Dir, {unix, Sun})
+get_disk_free(Dir, {unix, Sun}, Port)
   when Sun =:= sunos; Sun =:= sunos4; Sun =:= solaris ->
-    Df = os:find_executable("df"),
-    parse_free_unix(run_cmd(Df ++ " -k " ++ Dir));
-get_disk_free(Dir, {unix, _}) ->
-    Df = os:find_executable("df"),
-    parse_free_unix(run_cmd(Df ++ " -kP " ++ Dir));
-get_disk_free(Dir, {win32, _}) ->
+    Df = find_cmd("df"),
+    parse_free_unix(run_port_cmd(Df ++ " -k '" ++ Dir ++ "'", Port));
+get_disk_free(Dir, {unix, _}, Port) ->
+    Df = find_cmd("df"),
+    parse_free_unix(run_port_cmd(Df ++ " -kP '" ++ Dir ++ "'", Port));
+get_disk_free(Dir, {win32, _}, not_used) ->
     % Dir:
     % "c:/Users/username/AppData/Roaming/RabbitMQ/db/rabbit2@username-z01-mnesia"
     case win32_get_drive_letter(Dir) of
         error ->
             rabbit_log:warning("Expected the mnesia directory absolute "
                                "path to start with a drive letter like "
-                               "'C:'. The path is: '~p'", [Dir]),
+                               "'C:'. The path is: '~tp'", [Dir]),
             {ok, Free} = win32_get_disk_free_dir(Dir),
             Free;
         DriveLetter ->
-            case catch win32_get_disk_free_pwsh(DriveLetter) of
-                {ok, Free1} -> Free1;
-                _PwshNotOk -> exit(could_not_determine_disk_free)
-            end
+            % Note: yes, "$\s" is the $char sequence for an ASCII space
+            F = fun([D, $:, $\\, $\s | _]) when D =:= DriveLetter ->
+                        true;
+                   (_) -> false
+                end,
+            % Note: we can use os_mon_sysinfo:get_disk_info/1 after the following is fixed:
+            % https://github.com/erlang/otp/issues/6156
+            [DriveInfoStr] = lists:filter(F, os_mon_sysinfo:get_disk_info()),
+
+            % Note: DriveInfoStr is in this format
+            % "C:\\ DRIVE_FIXED 720441434112 1013310287872 720441434112\n"
+            [DriveLetter, $:, $\\, $\s | DriveInfo] = DriveInfoStr,
+
+            % https://docs.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getdiskfreespaceexa
+            % lib/os_mon/c_src/win32sysinfo.c:
+            % if (fpGetDiskFreeSpaceEx(drive,&availbytes,&totbytes,&totbytesfree)){
+            %     sprintf(answer,"%s DRIVE_FIXED %I64u %I64u %I64u\n",drive,availbytes,totbytes,totbytesfree);
+            ["DRIVE_FIXED", FreeBytesAvailableToCallerStr,
+             _TotalNumberOfBytesStr, _TotalNumberOfFreeBytesStr] = string:tokens(DriveInfo, " "),
+            list_to_integer(FreeBytesAvailableToCallerStr)
     end.
 
+parse_free_unix({error, Error}) ->
+    exit({unparseable, Error});
 parse_free_unix(Str) ->
     case string:tokens(Str, "\n") of
         [_, S | _] -> case string:tokens(S, " \t") of
@@ -264,25 +339,13 @@ parse_free_unix(Str) ->
         _          -> exit({unparseable, Str})
     end.
 
-win32_get_drive_letter([DriveLetter, $:, $/ | _]) when
-      (DriveLetter >= $a andalso DriveLetter =< $z) orelse
-      (DriveLetter >= $A andalso DriveLetter =< $Z) ->
+win32_get_drive_letter([DriveLetter, $:, $/ | _]) when (DriveLetter >= $a andalso DriveLetter =< $z) ->
+    % Note: os_mon_sysinfo returns drives with uppercase letters, so uppercase it here
+    DriveLetter - 32;
+win32_get_drive_letter([DriveLetter, $:, $/ | _]) when (DriveLetter >= $A andalso DriveLetter =< $Z) ->
     DriveLetter;
 win32_get_drive_letter(_) ->
     error.
-
-win32_get_disk_free_pwsh(DriveLetter) when
-      (DriveLetter >= $a andalso DriveLetter =< $z) orelse
-      (DriveLetter >= $A andalso DriveLetter =< $Z) ->
-    % DriveLetter $c
-    PoshCmd = "powershell.exe -NoLogo -NoProfile -NonInteractive -Command (Get-PSDrive " ++ [DriveLetter] ++ ").Free",
-    case run_cmd(PoshCmd) of
-        {error, timeout} ->
-            error;
-        PoshResult ->
-            % Note: remove \r\n
-            {ok, list_to_integer(string:trim(PoshResult))}
-    end.
 
 win32_get_disk_free_dir(Dir) ->
     %% On Windows, the Win32 API enforces a limit of 260 characters
@@ -306,11 +369,16 @@ win32_get_disk_free_dir(Dir) ->
     %% See the following page to learn more about this:
     %% https://ss64.com/nt/syntax-filenames.html
     RawDir = "\\\\?\\" ++ string:replace(Dir, "/", "\\", all),
-    CommandResult = run_cmd("dir /-C /W \"" ++ RawDir ++ "\""),
-    LastLine = lists:last(string:tokens(CommandResult, "\r\n")),
-    {match, [Free]} = re:run(lists:reverse(LastLine), "(\\d+)",
-                             [{capture, all_but_first, list}]),
-    {ok, list_to_integer(lists:reverse(Free))}.
+    case run_os_cmd("dir /-C /W \"" ++ RawDir ++ "\"") of
+        {error, Error} ->
+            exit({unparseable, Error});
+        CommandResult ->
+            LastLine0 = lists:last(string:tokens(CommandResult, "\r\n")),
+            LastLine1 = lists:reverse(LastLine0),
+            {match, [Free]} = re:run(LastLine1, "(\\d+)",
+                                     [{capture, all_but_first, list}]),
+            {ok, list_to_integer(lists:reverse(Free))}
+    end.
 
 interpret_limit({mem_relative, Relative})
     when is_number(Relative) ->
@@ -321,14 +389,14 @@ interpret_limit(Absolute) ->
     case rabbit_resource_monitor_misc:parse_information_unit(Absolute) of
         {ok, ParsedAbsolute} -> ParsedAbsolute;
         {error, parse_error} ->
-            rabbit_log:error("Unable to parse disk_free_limit value ~p",
+            rabbit_log:error("Unable to parse disk_free_limit value ~tp",
                              [Absolute]),
             ?DEFAULT_DISK_FREE_LIMIT
     end.
 
 emit_update_info(StateStr, CurrentFree, Limit) ->
     rabbit_log:info(
-      "Free disk space is ~s. Free bytes: ~p. Limit: ~p",
+      "Free disk space is ~ts. Free bytes: ~b. Limit: ~b",
       [StateStr, CurrentFree, Limit]).
 
 start_timer(State) ->
@@ -345,23 +413,34 @@ interval(#state{limit        = Limit,
     trunc(erlang:max(MinInterval, erlang:min(MaxInterval, IdealInterval))).
 
 enable(#state{retries = 0} = State) ->
+    rabbit_log:error("Free disk space monitor failed to start!"),
     State;
-enable(#state{dir = Dir, interval = Interval, limit = Limit, retries = Retries}
-       = State) ->
-    case {catch get_disk_free(Dir),
-          vm_memory_monitor:get_total_memory()} of
-        {N1, N2} when is_integer(N1), is_integer(N2) ->
-            rabbit_log:info("Enabling free disk space monitoring", []),
-            start_timer(set_disk_limits(State, Limit));
-        Err ->
-            rabbit_log:info("Free disk space monitor encountered an error "
-                            "(e.g. failed to parse output from OS tools): ~p, retries left: ~b",
-                            [Err, Retries]),
-            erlang:send_after(Interval, self(), try_enable),
-            State#state{enabled = false}
-    end.
+enable(#state{dir = Dir, os = OS, port = Port} = State) ->
+    enable_handle_disk_free(catch get_disk_free(Dir, OS, Port), State).
 
-run_cmd(Cmd) ->
+enable_handle_disk_free(DiskFree, State) when is_integer(DiskFree) ->
+    enable_handle_total_memory(catch vm_memory_monitor:get_total_memory(), DiskFree, State);
+enable_handle_disk_free(Error, #state{interval = Interval, retries = Retries} = State) ->
+    rabbit_log:warning("Free disk space monitor encountered an error "
+                       "(e.g. failed to parse output from OS tools). "
+                       "Retries left: ~b Error:~n~tp",
+                       [Retries, Error]),
+    erlang:send_after(Interval, self(), try_enable),
+    State#state{enabled = false}.
+
+enable_handle_total_memory(TotalMemory, DiskFree, #state{limit = Limit} = State) when is_integer(TotalMemory) ->
+    rabbit_log:info("Enabling free disk space monitoring "
+                    "(disk free space: ~b, total memory: ~b)", [DiskFree, TotalMemory]),
+    start_timer(set_disk_limits(State, Limit));
+enable_handle_total_memory(Error, _DiskFree, #state{interval = Interval, retries = Retries} = State) ->
+    rabbit_log:warning("Free disk space monitor encountered an error "
+                       "retrieving total memory. "
+                       "Retries left: ~b Error:~n~tp",
+                       [Retries, Error]),
+    erlang:send_after(Interval, self(), try_enable),
+    State#state{enabled = false}.
+
+run_os_cmd(Cmd) ->
     Pid = self(),
     Ref = make_ref(),
     CmdFun = fun() ->
@@ -374,6 +453,6 @@ run_cmd(Cmd) ->
             CmdResult
     after 5000 ->
         exit(CmdPid, kill),
-        rabbit_log:error("Command timed out: '~s'", [Cmd]),
+        rabbit_log:error("Command timed out: '~ts'", [Cmd]),
         {error, timeout}
     end.

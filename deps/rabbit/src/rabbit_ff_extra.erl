@@ -80,7 +80,8 @@ cli_info(FeatureFlags) ->
 %% @param Options Options to tune what is displayed and how.
 
 info(Options) ->
-    %% Two tables: one for stable feature flags, one for experimental ones.
+    %% Two tables: one for stable/required feature flags, one for
+    %% experimental ones.
     StableFF = rabbit_feature_flags:list(all, stable),
     case maps:size(StableFF) of
         0 ->
@@ -175,7 +176,7 @@ info(FeatureFlags, Options) ->
                                         false -> {"unsupported", Red}
                                     end,
                                     #paragraph{content =
-                                               [rabbit_misc:format("  ~s: ",
+                                               [rabbit_misc:format("  ~ts: ",
                                                                    [Node]),
                                                 #paragraph{content = Label,
                                                            props = LabelColor}]}
@@ -241,4 +242,4 @@ state_legend(Options) ->
 %% @returns the formatted error reason.
 
 format_error(Reason) ->
-    rabbit_misc:format("~p", [Reason]).
+    rabbit_misc:format("~tp", [Reason]).

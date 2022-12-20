@@ -19,6 +19,7 @@
 -type ra_system_name() :: atom().
 
 -define(COORD_WAL_MAX_SIZE_B, 64_000_000).
+-define(QUORUM_AER_MAX_RPC_SIZE, 16).
 
 -spec setup() -> ok | no_return().
 
@@ -44,25 +45,25 @@ all_ra_systems() ->
 ensure_ra_system_started(RaSystem) ->
     RaSystemConfig = get_config(RaSystem),
     ?LOG_DEBUG(
-       "Starting Ra system called \"~s\" with configuration:~n~p",
+       "Starting Ra system called \"~ts\" with configuration:~n~tp",
        [RaSystem, RaSystemConfig],
        #{domain => ?RMQLOG_DOMAIN_GLOBAL}),
     case ra_system:start(RaSystemConfig) of
         {ok, _} ->
             ?LOG_DEBUG(
-               "Ra system \"~s\" ready",
+               "Ra system \"~ts\" ready",
                [RaSystem],
                #{domain => ?RMQLOG_DOMAIN_GLOBAL}),
             ok;
         {error, {already_started, _}} ->
             ?LOG_DEBUG(
-               "Ra system \"~s\" ready",
+               "Ra system \"~ts\" ready",
                [RaSystem],
                #{domain => ?RMQLOG_DOMAIN_GLOBAL}),
             ok;
         Error ->
             ?LOG_ERROR(
-               "Failed to start Ra system \"~s\": ~p",
+               "Failed to start Ra system \"~ts\": ~tp",
                [RaSystem, Error],
                #{domain => ?RMQLOG_DOMAIN_GLOBAL}),
             throw(Error)
@@ -72,11 +73,21 @@ ensure_ra_system_started(RaSystem) ->
 
 get_config(quorum_queues = RaSystem) ->
     DefaultConfig = get_default_config(),
-    DefaultConfig#{name => RaSystem}; % names => ra_system:derive_names(quorum)
+    Checksums = application:get_env(rabbit, quorum_compute_checksums, true),
+    WalChecksums = application:get_env(rabbit, quorum_wal_compute_checksums, Checksums),
+    SegmentChecksums = application:get_env(rabbit, quorum_segment_compute_checksums, Checksums),
+    AERBatchSize = application:get_env(rabbit, quorum_max_append_entries_rpc_batch_size,
+                                       ?QUORUM_AER_MAX_RPC_SIZE),
+    CompressMemTables = application:get_env(rabbit, quorum_compress_mem_tables, false),
+    DefaultConfig#{name => RaSystem,
+                   default_max_append_entries_rpc_batch_size => AERBatchSize,
+                   wal_compute_checksums => WalChecksums,
+                   segment_compute_checksums => SegmentChecksums,
+                   compress_mem_tables => CompressMemTables};
 get_config(coordination = RaSystem) ->
     DefaultConfig = get_default_config(),
     CoordDataDir = filename:join(
-                     [rabbit_mnesia:dir(), "coordination", node()]),
+                     [rabbit:data_dir(), "coordination", node()]),
     DefaultConfig#{name => RaSystem,
                    data_dir => CoordDataDir,
                    wal_data_dir => CoordDataDir,

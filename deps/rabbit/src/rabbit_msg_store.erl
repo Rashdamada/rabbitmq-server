@@ -9,7 +9,7 @@
 
 -behaviour(gen_server2).
 
--export([start_link/5, start_global_store_link/4, successfully_recovered_state/1,
+-export([start_link/5, successfully_recovered_state/1,
          client_init/4, client_terminate/1, client_delete_and_terminate/1,
          client_ref/1, close_all_indicated/1,
          write/3, write_flow/3, read/2, contains/2, remove/2]).
@@ -18,8 +18,6 @@
          delete_file/2]). %% internal
 
 -export([scan_file_for_valid_messages/1]). %% salvage tool
-
--export([transform_dir/3, force_recovery/2]). %% upgrade
 
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2,
          code_change/3, prioritise_call/4, prioritise_cast/3,
@@ -162,7 +160,7 @@
         fun ((A) -> 'finished' |
                     {rabbit_types:msg_id(), non_neg_integer(), A}).
 -type maybe_msg_id_fun() ::
-        'undefined' | fun ((gb_sets:set(), 'written' | 'ignored') -> any()).
+        'undefined' | fun ((sets:set(), 'written' | 'ignored') -> any()).
 -type maybe_close_fds_fun() :: 'undefined' | fun (() -> 'ok').
 -type deletion_thunk() :: fun (() -> boolean()).
 
@@ -447,11 +445,6 @@ start_link(VHost, Type, Dir, ClientRefs, StartupFunState) when is_atom(Type) ->
                            [VHost, Type, Dir, ClientRefs, StartupFunState],
                            [{timeout, infinity}]).
 
-start_global_store_link(Type, Dir, ClientRefs, StartupFunState) when is_atom(Type) ->
-    gen_server2:start_link({local, Type}, ?MODULE,
-                           [global, Type, Dir, ClientRefs, StartupFunState],
-                           [{timeout, infinity}]).
-
 -spec successfully_recovered_state(server()) -> boolean().
 
 successfully_recovered_state(Server) ->
@@ -725,7 +718,7 @@ init([VHost, Type, BaseDir, ClientRefs, StartupFunState]) ->
     Name = filename:join(filename:basename(BaseDir), atom_to_list(Type)),
 
     {ok, IndexModule} = application:get_env(rabbit, msg_store_index_module),
-    rabbit_log:info("Message store ~tp: using ~p to provide index", [Name, IndexModule]),
+    rabbit_log:info("Message store ~tp: using ~tp to provide index", [Name, IndexModule]),
 
     AttemptFileSummaryRecovery =
         case ClientRefs of
@@ -757,8 +750,12 @@ init([VHost, Type, BaseDir, ClientRefs, StartupFunState]) ->
 
     FileHandlesEts  = ets:new(rabbit_msg_store_shared_file_handles,
                               [ordered_set, public]),
-    CurFileCacheEts = ets:new(rabbit_msg_store_cur_file, [set, public]),
-    FlyingEts       = ets:new(rabbit_msg_store_flying, [set, public]),
+    CurFileCacheEts = ets:new(rabbit_msg_store_cur_file, [set, public,
+                              {read_concurrency, true},
+                              {write_concurrency, true}]),
+    FlyingEts       = ets:new(rabbit_msg_store_flying, [set, public,
+                              {read_concurrency, true},
+                              {write_concurrency, true}]),
 
     {ok, FileSizeLimit} = application:get_env(rabbit, msg_store_file_size_limit),
 
@@ -802,7 +799,7 @@ init([VHost, Type, BaseDir, ClientRefs, StartupFunState]) ->
                       true -> "clean";
                       false -> "unclean"
                   end,
-    rabbit_log:debug("Rebuilding message location index after ~s shutdown...",
+    rabbit_log:debug("Rebuilding message location index after ~ts shutdown...",
                      [Cleanliness]),
     {Offset, State1 = #msstate { current_file = CurFile }} =
         build_index(CleanShutdown, StartupFunState, State),
@@ -907,7 +904,7 @@ handle_cast({write, CRef, MsgId, Flow},
         ignore ->
             %% A 'remove' has already been issued and eliminated the
             %% 'write'.
-            State1 = blind_confirm(CRef, gb_sets:singleton(MsgId),
+            State1 = blind_confirm(CRef, sets:add_element(MsgId, sets:new([{version,2}])),
                                    ignored, State),
             %% If all writes get eliminated, cur_file_cache_ets could
             %% grow unbounded. To prevent that we delete the cache
@@ -938,7 +935,7 @@ handle_cast({remove, CRef, MsgIds}, State) ->
                       ignore  -> {Removed, State2}
                   end
           end, {[], State}, MsgIds),
-    noreply(maybe_compact(client_confirm(CRef, gb_sets:from_list(RemovedMsgIds),
+    noreply(maybe_compact(client_confirm(CRef, sets:from_list(RemovedMsgIds),
                                          ignored, State1)));
 
 handle_cast({combine_files, Source, Destination, Reclaimed},
@@ -970,6 +967,12 @@ handle_info(sync, State) ->
 handle_info(timeout, State) ->
     noreply(internal_sync(State));
 
+%% @todo When a CQ crashes the message store does not remove
+%%       the client information and clean up. This eventually
+%%       leads to the queue running a full recovery on the next
+%%       message store restart because the store will keep the
+%%       crashed queue's ref in its persistent state and fail
+%%       to find the corresponding ref during start.
 handle_info({'DOWN', _MRef, process, Pid, _Reason}, State) ->
     %% similar to what happens in
     %% rabbit_amqqueue_process:handle_ch_down but with a relation of
@@ -991,7 +994,7 @@ terminate(_Reason, State = #msstate { index_state         = IndexState,
                                       flying_ets          = FlyingEts,
                                       clients             = Clients,
                                       dir                 = Dir }) ->
-    rabbit_log:info("Stopping message store for directory '~s'", [Dir]),
+    rabbit_log:info("Stopping message store for directory '~ts'", [Dir]),
     %% stop the gc first, otherwise it could be working and we pull
     %% out the ets tables from under it.
     ok = rabbit_msg_store_gc:stop(GCPid),
@@ -1006,8 +1009,8 @@ terminate(_Reason, State = #msstate { index_state         = IndexState,
         ok           -> ok;
         {error, FSErr} ->
             rabbit_log:error("Unable to store file summary"
-                             " for vhost message store for directory ~p~n"
-                             "Error: ~p",
+                             " for vhost message store for directory ~tp~n"
+                             "Error: ~tp",
                              [Dir, FSErr])
     end,
     [true = ets:delete(T) || T <- [FileSummaryEts, FileHandlesEts,
@@ -1016,11 +1019,11 @@ terminate(_Reason, State = #msstate { index_state         = IndexState,
     case store_recovery_terms([{client_refs, maps:keys(Clients)},
                                {index_module, IndexModule}], Dir) of
         ok           ->
-            rabbit_log:info("Message store for directory '~s' is stopped", [Dir]),
+            rabbit_log:info("Message store for directory '~ts' is stopped", [Dir]),
             ok;
         {error, RTErr} ->
             rabbit_log:error("Unable to save message store recovery terms"
-                             " for directory ~p~nError: ~p",
+                             " for directory ~tp~nError: ~tp",
                              [Dir, RTErr])
     end,
     State3 #msstate { index_state         = undefined,
@@ -1066,7 +1069,7 @@ internal_sync(State = #msstate { current_file_handle = CurHdl,
                                  cref_to_msg_ids     = CTM }) ->
     State1 = stop_sync_timer(State),
     CGs = maps:fold(fun (CRef, MsgIds, NS) ->
-                            case gb_sets:is_empty(MsgIds) of
+                            case sets:is_empty(MsgIds) of
                                 true  -> NS;
                                 false -> [{CRef, MsgIds} | NS]
                             end
@@ -1156,7 +1159,7 @@ write_message(MsgId, Msg, CRef,
             true = ets:delete_object(CurFileCacheEts, {MsgId, Msg, 0}),
             update_pending_confirms(
               fun (MsgOnDiskFun, CTM) ->
-                      MsgOnDiskFun(gb_sets:singleton(MsgId), written),
+                      MsgOnDiskFun(sets:add_element(MsgId, sets:new([{version,2}])), written),
                       CTM
               end, CRef, State1)
     end.
@@ -1356,8 +1359,8 @@ record_pending_confirm(CRef, MsgId, State) ->
     update_pending_confirms(
       fun (_MsgOnDiskFun, CTM) ->
             NewMsgIds = case maps:find(CRef, CTM) of
-                error        -> gb_sets:singleton(MsgId);
-                {ok, MsgIds} -> gb_sets:add(MsgId, MsgIds)
+                error        -> sets:add_element(MsgId, sets:new([{version,2}]));
+                {ok, MsgIds} -> sets:add_element(MsgId, MsgIds)
             end,
             maps:put(CRef, NewMsgIds, CTM)
       end, CRef, State).
@@ -1366,11 +1369,10 @@ client_confirm(CRef, MsgIds, ActionTaken, State) ->
     update_pending_confirms(
       fun (MsgOnDiskFun, CTM) ->
               case maps:find(CRef, CTM) of
-                  {ok, Gs} -> MsgOnDiskFun(gb_sets:intersection(Gs, MsgIds),
+                  {ok, Gs} -> MsgOnDiskFun(sets:intersection(Gs, MsgIds),
                                            ActionTaken),
-                              MsgIds1 = rabbit_misc:gb_sets_difference(
-                                          Gs, MsgIds),
-                              case gb_sets:is_empty(MsgIds1) of
+                              MsgIds1 = sets:subtract(Gs, MsgIds),
+                              case sets:is_empty(MsgIds1) of
                                   true  -> maps:remove(CRef, CTM);
                                   false -> maps:put(CRef, MsgIds1, CTM)
                               end;
@@ -1601,7 +1603,7 @@ recover_index_and_client_refs(IndexModule, true, ClientRefs, Dir, Name) ->
             end,
     case read_recovery_terms(Dir) of
         {false, Error} ->
-            Fresh("failed to read recovery terms: ~p", [Error]);
+            Fresh("failed to read recovery terms: ~tp", [Error]);
         {true, Terms} ->
             RecClientRefs  = proplists:get_value(client_refs, Terms, []),
             RecIndexModule = proplists:get_value(index_module, Terms),
@@ -1611,7 +1613,7 @@ recover_index_and_client_refs(IndexModule, true, ClientRefs, Dir, Name) ->
                              {ok, IndexState1} ->
                                  {true, IndexState1, ClientRefs};
                              {error, Error} ->
-                                 Fresh("failed to recover index: ~p", [Error])
+                                 Fresh("failed to recover index: ~tp", [Error])
                          end;
                 false -> Fresh("recovery terms differ from present", [])
             end
@@ -1773,7 +1775,7 @@ build_index(false, {MsgRefDeltaGen, MsgRefDeltaGenInit},
 build_index_worker(Gatherer, State = #msstate { dir = Dir },
                    Left, File, Files) ->
     FileName = filenum_to_name(File),
-    rabbit_log:debug("Rebuilding message location index from ~p (~B file(s) remaining)",
+    rabbit_log:debug("Rebuilding message location index from ~ts (~B file(s) remaining)",
                      [form_filename(Dir, FileName), length(Files)]),
     {ok, Messages, FileSize} =
         scan_file_for_valid_messages(Dir, FileName),
@@ -2027,7 +2029,7 @@ combine_files(Source, Destination,
             {ok, do_combine_files(SourceSummary, DestinationSummary,
                                   Source, Destination, State)};
         _ ->
-            rabbit_log:debug("Asked to combine files ~p and ~p but they have active readers. Deferring.",
+            rabbit_log:debug("Asked to combine files ~tp and ~tp but they have active readers. Deferring.",
                              [Source, Destination]),
             DeferredFiles = [FileSummary#file_summary.file
                              || FileSummary <- [SourceSummary, DestinationSummary],
@@ -2109,7 +2111,7 @@ do_combine_files(SourceSummary, DestinationSummary,
               {#file_summary.file_size,        TotalValidData}]),
 
     Reclaimed = SourceFileSize + DestinationFileSize - TotalValidData,
-    rabbit_log:debug("Combined segment files number ~p (source) and ~p (destination), reclaimed ~p bytes",
+    rabbit_log:debug("Combined segment files number ~tp (source) and ~tp (destination), reclaimed ~tp bytes",
                      [Source, Destination, Reclaimed]),
     gen_server2:cast(Server, {combine_files, Source, Destination, Reclaimed}),
     safe_file_delete_fun(Source, Dir, FileHandlesEts).
@@ -2129,7 +2131,7 @@ delete_file(File, State = #gc_state { file_summary_ets = FileSummaryEts,
             gen_server2:cast(Server, {delete_file, File, FileSize}),
             {ok, safe_file_delete_fun(File, Dir, FileHandlesEts)};
         [#file_summary{readers = Readers}] when Readers > 0 ->
-            rabbit_log:debug("Asked to delete file ~p but it has active readers. Deferring.",
+            rabbit_log:debug("Asked to delete file ~tp but it has active readers. Deferring.",
                              [File]),
             {defer, [File]}
     end.
@@ -2202,60 +2204,3 @@ copy_messages(WorkList, InitOffset, FinalOffset, SourceHdl, DestinationHdl,
                         {got, FinalOffsetZ},
                         {destination, Destination}]}
     end.
-
--spec force_recovery(file:filename(), server()) -> 'ok'.
-
-force_recovery(BaseDir, Store) ->
-    Dir = filename:join(BaseDir, atom_to_list(Store)),
-    case file:delete(filename:join(Dir, ?CLEAN_FILENAME)) of
-        ok              -> ok;
-        {error, enoent} -> ok
-    end,
-    recover_crashed_compactions(BaseDir),
-    ok.
-
-foreach_file(D, Fun, Files) ->
-    [ok = Fun(filename:join(D, File)) || File <- Files].
-
-foreach_file(D1, D2, Fun, Files) ->
-    [ok = Fun(filename:join(D1, File), filename:join(D2, File)) || File <- Files].
-
--spec transform_dir(file:filename(), server(),
-        fun ((any()) -> (rabbit_types:ok_or_error2(msg(), any())))) -> 'ok'.
-
-transform_dir(BaseDir, Store, TransformFun) ->
-    Dir = filename:join(BaseDir, atom_to_list(Store)),
-    TmpDir = filename:join(Dir, ?TRANSFORM_TMP),
-    TransformFile = fun (A, B) -> transform_msg_file(A, B, TransformFun) end,
-    CopyFile = fun (Src, Dst) -> {ok, _Bytes} = file:copy(Src, Dst), ok end,
-    case filelib:is_dir(TmpDir) of
-        true  -> throw({error, transform_failed_previously});
-        false -> FileList = list_sorted_filenames(Dir, ?FILE_EXTENSION),
-                 foreach_file(Dir, TmpDir, TransformFile,     FileList),
-                 foreach_file(Dir,         fun file:delete/1, FileList),
-                 foreach_file(TmpDir, Dir, CopyFile,          FileList),
-                 foreach_file(TmpDir,      fun file:delete/1, FileList),
-                 ok = file:del_dir(TmpDir)
-    end.
-
-transform_msg_file(FileOld, FileNew, TransformFun) ->
-    ok = rabbit_file:ensure_parent_dirs_exist(FileNew),
-    {ok, RefOld} = file_handle_cache:open_with_absolute_path(
-                     FileOld, [raw, binary, read], []),
-    {ok, RefNew} = file_handle_cache:open_with_absolute_path(
-                     FileNew, [raw, binary, write],
-                     [{write_buffer, ?HANDLE_CACHE_BUFFER_SIZE}]),
-    {ok, _Acc, _IgnoreSize} =
-        rabbit_msg_file:scan(
-          RefOld, filelib:file_size(FileOld),
-          fun({MsgId, _Size, _Offset, BinMsg}, ok) ->
-                  {ok, MsgNew} = case binary_to_term(BinMsg) of
-                                     <<>> -> {ok, <<>>};  %% dying client marker
-                                     Msg  -> TransformFun(Msg)
-                                 end,
-                  {ok, _} = rabbit_msg_file:append(RefNew, MsgId, MsgNew),
-                  ok
-          end, ok),
-    ok = file_handle_cache:close(RefOld),
-    ok = file_handle_cache:close(RefNew),
-    ok.

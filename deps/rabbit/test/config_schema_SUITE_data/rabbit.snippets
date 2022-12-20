@@ -100,6 +100,46 @@ ssl_options.fail_if_no_peer_cert = true",
  {socket_writer_gc_threshold_off,
   "socket_writer.gc_threshold = off", [{rabbit, [{writer_gc_threshold, undefined}]}],[]},
 
+ {disk_free_limit_absolute_priority,
+  "disk_free_limit.relative = 1.0
+   disk_free_limit.absolute = 50000",
+   [{rabbit, [{disk_free_limit, 50000}]}],[]},
+
+ {disk_free_limit_absolute_priority_regardless_of_order,
+  "disk_free_limit.absolute = 50000
+    disk_free_limit.relative = 1.0",
+   [{rabbit, [{disk_free_limit, 50000}]}],[]},
+
+ {disk_free_limit_only_relative,
+  "disk_free_limit.relative = 1.0",
+   [{rabbit, [{disk_free_limit, {mem_relative, 1.0}}]}],[]},
+
+ {disk_free_limit_only_absolute,
+  "disk_free_limit.absolute = 50000",
+   [{rabbit, [{disk_free_limit, 50000}]}],[]},
+
+ {default_policies_operator,
+ "
+  default_policies.operator.a.expires = 1h
+  default_policies.operator.a.queue_pattern = apple
+  default_policies.operator.a.vhost_pattern = banana
+ ",
+  [{rabbit, [{default_policies, [{operator, [
+      {<<"a">>, [{<<"expires">>, 3600000},
+                 {<<"queue-pattern">>, "apple"},
+                 {<<"vhost-pattern">>, "banana"}]}]}]}]}],
+  []},
+
+ {default_vhost_limits,
+ "
+  default_limits.vhosts.a.pattern = banana
+  default_limits.vhosts.a.max_queues = 10
+ ",
+  [{rabbit, [{default_limits, [{vhosts, [
+      {<<"a">>, [{<<"pattern">>, "banana"},
+                 {<<"max-queues">>, 10}]}]}]}]}],
+  []},
+
  {default_user_settings,
   "default_user = guest
 default_pass = guest
@@ -185,6 +225,11 @@ tcp_listen_options.exit_on_close = false",
  {vm_memory_watermark_absolute_units,
   "vm_memory_high_watermark.absolute = 1024MB",
   [{rabbit,[{vm_memory_high_watermark,{absolute,"1024MB"}}]}],
+  []},
+ {vm_memory_watermark_absolute_priority,
+  "vm_memory_high_watermark.absolute = 1073741824
+   vm_memory_high_watermark.relative = 0.4",
+  [{rabbit,[{vm_memory_high_watermark,{absolute,1073741824}}]}],
   []},
  {vm_memory_watermark_paging_ratio,
   "vm_memory_high_watermark_paging_ratio = 0.75
@@ -799,6 +844,13 @@ credential_validator.regexp = ^abc\\d+",
      ]}],
    []},
 
+   {raft_adaptive_failure_detector_poll_interval,
+   "raft.adaptive_failure_detector.poll_interval = 10000",
+   [{aten, [
+      {poll_interval, 10000}
+     ]}],
+   []},
+
   %%
   %% Backing queue version
   %%
@@ -812,5 +864,16 @@ credential_validator.regexp = ^abc\\d+",
   {classic_queue_default_version_invalid,
    "classic_queue.default_version = 3",
    [],
+   []},
+
+  %%
+  %% Quorum queue
+  %%
+
+  {quorum_queue_compute_checksums,
+   "quorum_queue.compute_checksums = true",
+   [{rabbit, [
+      {quorum_compute_checksums, true}
+     ]}],
    []}
 ].

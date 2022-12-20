@@ -43,21 +43,17 @@ http_get(Config, Path, User, Pass, CodeExp) ->
     assert_code(CodeExp, CodeAct, "GET", Path, ResBody),
     decode(CodeExp, Headers, ResBody).
 
-http_get_as_proplist(Config, Path) ->
-    {ok, {{_HTTP, CodeAct, _}, _Headers, ResBody}} =
-        req(Config, get, Path, [auth_header("guest", "guest")]),
-    assert_code(?OK, CodeAct, "GET", Path, ResBody),
-    JSON = rabbit_data_coercion:to_binary(ResBody),
-    cleanup(rabbit_json:decode(JSON, [{return_maps, false}])).
-
-http_get_no_map(Config, Path) ->
-    http_get_as_proplist(Config, Path).
-
 http_get_no_auth(Config, Path, CodeExp) ->
     {ok, {{_HTTP, CodeAct, _}, Headers, ResBody}} =
         req(Config, 0, get, Path, []),
     assert_code(CodeExp, CodeAct, "GET", Path, ResBody),
     decode(CodeExp, Headers, ResBody).
+
+http_get_no_decode(Config, Path, User, Pass, CodeExp) ->
+    {ok, {{_HTTP, CodeAct, _}, _Headers, ResBody}} =
+        req(Config, 0, get, Path, [auth_header(User, Pass)]),
+    assert_code(CodeExp, CodeAct, "GET", Path, ResBody),
+    ResBody.
 
 http_put(Config, Path, List, CodeExp) ->
     http_put_raw(Config, Path, format_for_upload(List), CodeExp).
@@ -110,7 +106,7 @@ uri_base_from(Config, Node) ->
 uri_base_from(Config, Node, Base) ->
     Port = mgmt_port(Config, Node),
     Prefix = get_uri_prefix(Config),
-    Uri = rabbit_mgmt_format:print("http://localhost:~w~s/~s", [Port, Prefix, Base]),
+    Uri = rabbit_mgmt_format:print("http://localhost:~w~ts/~ts", [Port, Prefix, Base]),
     binary_to_list(Uri).
 
 get_uri_prefix(Config) ->
@@ -251,16 +247,16 @@ assert_code(CodeExp, CodeAct, Type, Path, Body) ->
 
 decode(?OK, _Headers,  ResBody) ->
     JSON = rabbit_data_coercion:to_binary(ResBody),
-    cleanup(rabbit_json:decode(JSON));
+    atomize_map_keys(rabbit_json:decode(JSON));
 decode(_,    Headers, _ResBody) -> Headers.
 
-cleanup(L) when is_list(L) ->
-    [cleanup(I) || I <- L];
-cleanup(M) when is_map(M) ->
+atomize_map_keys(L) when is_list(L) ->
+    [atomize_map_keys(I) || I <- L];
+atomize_map_keys(M) when is_map(M) ->
     maps:fold(fun(K, V, Acc) ->
-        Acc#{binary_to_atom(K, latin1) => cleanup(V)}
+        Acc#{binary_to_atom(K, latin1) => atomize_map_keys(V)}
     end, #{}, M);
-cleanup(I) ->
+atomize_map_keys(I) ->
     I.
 
 %% @todo There wasn't a specific order before; now there is; maybe we shouldn't have one?

@@ -204,7 +204,7 @@ switch_callback(State, Callback, Length) ->
 terminate(Reason, State) when ?IS_RUNNING(State) ->
     {normal, handle_exception(State, 0,
                               {?V_1_0_AMQP_ERROR_INTERNAL_ERROR,
-                               "Connection forced: ~p", [Reason]})};
+                               "Connection forced: ~tp", [Reason]})};
 terminate(_Reason, State) ->
     {force, State}.
 
@@ -247,7 +247,7 @@ handle_dependent_exit(ChPid, Reason, State) ->
         {Channel, uncontrolled} ->
             {RealReason, Trace} = Reason,
             R = {?V_1_0_AMQP_ERROR_INTERNAL_ERROR,
-                 "Session error: ~p~n~p", [RealReason, Trace]},
+                 "Session error: ~tp~n~tp", [RealReason, Trace]},
             maybe_close(handle_exception(control_throttle(State), Channel, R))
     end.
 
@@ -275,13 +275,13 @@ error_frame(Condition, Fmt, Args) ->
 
 handle_exception(State = #v1{connection_state = closed}, Channel,
                  #'v1_0.error'{description = {utf8, Desc}}) ->
-    rabbit_log_connection:error("Error on AMQP 1.0 connection ~p (~p), channel ~p:~n~p",
+    rabbit_log_connection:error("Error on AMQP 1.0 connection ~tp (~tp), channel ~tp:~n~tp",
         [self(), closed, Channel, Desc]),
     State;
 handle_exception(State = #v1{connection_state = CS}, Channel,
                  ErrorFrame = #'v1_0.error'{description = {utf8, Desc}})
   when ?IS_RUNNING(State) orelse CS =:= closing ->
-    rabbit_log_connection:error("Error on AMQP 1.0 connection ~p (~p), channel ~p:~n~p",
+    rabbit_log_connection:error("Error on AMQP 1.0 connection ~tp (~tp), channel ~tp:~n~tp",
         [self(), CS, Channel, Desc]),
     %% TODO: session errors shouldn't force the connection to close
     State1 = close_connection(State),
@@ -317,11 +317,11 @@ handle_1_0_frame(Mode, Channel, Payload, State) ->
             %% section 2.8.15 in http://docs.oasis-open.org/amqp/core/v1.0/os/amqp-core-complete-v1.0-os.pdf
             handle_exception(State, 0, error_frame(
                                          ?V_1_0_AMQP_ERROR_UNAUTHORIZED_ACCESS,
-                                         "Access for user '~s' was refused: insufficient permissions", [Username]));
+                                         "Access for user '~ts' was refused: insufficient permissions", [Username]));
         _:Reason:Trace ->
             handle_exception(State, 0, error_frame(
                                          ?V_1_0_AMQP_ERROR_INTERNAL_ERROR,
-                                         "Reader error: ~p~n~p",
+                                         "Reader error: ~tp~n~tp",
                                          [Reason, Trace]))
     end.
 
@@ -346,12 +346,12 @@ handle_1_0_frame0(Mode, Channel, Payload, State) ->
 parse_1_0_frame(Payload, _Channel) ->
     {PerfDesc, Rest} = amqp10_binary_parser:parse(Payload),
     Perf = amqp10_framing:decode(PerfDesc),
-    ?DEBUG("Channel ~p ->~n~p~n~s",
+    ?DEBUG("Channel ~tp ->~n~tp~n~ts",
            [_Channel, amqp10_framing:pprint(Perf),
             case Rest of
                 <<>> -> <<>>;
                 _    -> rabbit_misc:format(
-                          "  followed by ~p bytes of content", [size(Rest)])
+                          "  followed by ~tp bytes of content", [size(Rest)])
             end]),
     case Rest of
         <<>> -> Perf;
@@ -417,7 +417,7 @@ handle_1_0_connection_frame(#'v1_0.open'{ max_frame_size = ClientFrameMax,
                     undefined -> undefined;
                     {utf8, Val} -> Val
                   end,
-    rabbit_log:debug("AMQP 1.0 connection.open frame: hostname = ~s, extracted vhost = ~s, idle_timeout = ~p" ,
+    rabbit_log:debug("AMQP 1.0 connection.open frame: hostname = ~ts, extracted vhost = ~ts, idle_timeout = ~tp" ,
                     [HostnameVal, vhost(Hostname), HeartbeatSec * 1000]),
     %% TODO enforce channel_max
     ok = send_on_channel0(
@@ -591,15 +591,19 @@ start_1_0_connection0(Mode, State = #v1{connection = Connection,
                                         helper_sup = HelperSup}) ->
     ChannelSupSupPid =
         case Mode of
-            sasl -> undefined;
-            amqp -> {ok, Pid} =
-                        supervisor2:start_child(
-                          HelperSup,
-                          {channel_sup_sup,
-                           {rabbit_amqp1_0_session_sup_sup, start_link, []},
-                           intrinsic, infinity, supervisor,
-                           [rabbit_amqp1_0_session_sup_sup]}),
-                    Pid
+            sasl ->
+                undefined;
+            amqp ->
+                StartMFA = {rabbit_amqp1_0_session_sup_sup, start_link, []},
+                ChildSpec = #{id => channel_sup_sup,
+                              start => StartMFA,
+                              restart => transient,
+                              significant => true,
+                              shutdown => infinity,
+                              type => supervisor,
+                              modules => [rabbit_amqp1_0_session_sup_sup]},
+                {ok, Pid} = supervisor:start_child(HelperSup, ChildSpec),
+                Pid
         end,
     switch_callback(State#v1{connection = Connection#v1_connection{
                                             timeout_sec = ?NORMAL_TIMEOUT},
@@ -623,7 +627,7 @@ auth_mechanism_to_module(TypeBin, Sock) ->
     case rabbit_registry:binary_to_type(TypeBin) of
         {error, not_found} ->
             protocol_error(?V_1_0_AMQP_ERROR_NOT_FOUND,
-                           "unknown authentication mechanism '~s'", [TypeBin]);
+                           "unknown authentication mechanism '~ts'", [TypeBin]);
         T ->
             case {lists:member(T, auth_mechanisms(Sock)),
                   rabbit_registry:lookup_module(auth_mechanism, T)} of
@@ -631,7 +635,7 @@ auth_mechanism_to_module(TypeBin, Sock) ->
                     Module;
                 _ ->
                     protocol_error(?V_1_0_AMQP_ERROR_NOT_FOUND,
-                                   "invalid authentication mechanism '~s'", [T])
+                                   "invalid authentication mechanism '~ts'", [T])
             end
     end.
 
@@ -657,7 +661,7 @@ auth_phase_1_0(Response,
             Outcome = #'v1_0.sasl_outcome'{code = {ubyte, 1}},
             ok = send_on_channel0(Sock, Outcome, rabbit_amqp1_0_sasl),
             protocol_error(
-              ?V_1_0_AMQP_ERROR_UNAUTHORIZED_ACCESS, "~s login refused: ~s",
+              ?V_1_0_AMQP_ERROR_UNAUTHORIZED_ACCESS, "~ts login refused: ~ts",
               [Name, io_lib:format(Msg, Args)]);
         {protocol_error, Msg, Args} ->
             rabbit_core_metrics:auth_attempt_failed(<<>>, <<>>, amqp10),
@@ -671,13 +675,16 @@ auth_phase_1_0(Response,
         {ok, User = #user{username = Username}} ->
             case rabbit_access_control:check_user_loopback(Username, Sock) of
                 ok ->
+                    rabbit_log_connection:info(
+                        "AMQP 1.0 connection ~tp: user '~ts' authenticated",
+                        [self(), Username]),
                     rabbit_core_metrics:auth_attempt_succeeded(<<>>, Username, amqp10),
                     ok;
                 not_allowed ->
                     rabbit_core_metrics:auth_attempt_failed(<<>>, Username, amqp10),
                     protocol_error(
                       ?V_1_0_AMQP_ERROR_UNAUTHORIZED_ACCESS,
-                      "user '~s' can only connect via localhost",
+                      "user '~ts' can only connect via localhost",
                       [Username])
             end,
             Outcome = #'v1_0.sasl_outcome'{code = {ubyte, 0}},
@@ -709,9 +716,13 @@ send_to_new_1_0_session(Channel, Frame, State) ->
             put({channel, Channel}, {ch_fr_pid, ChFrPid}),
             put({ch_sup_pid, ChSupPid}, {{channel, Channel}, {ch_fr_pid, ChFrPid}}),
             put({ch_fr_pid, ChFrPid}, {channel, Channel}),
+            rabbit_log_connection:info(
+                        "AMQP 1.0 connection ~tp: "
+                        "user '~ts' authenticated and granted access to vhost '~ts'",
+                        [self(), User#user.username, vhost(Hostname)]),
             ok = rabbit_amqp1_0_session:process_frame(ChFrPid, Frame);
         {error, {not_allowed, _}} ->
-            rabbit_log:error("AMQP 1.0: user '~s' is not allowed to access virtual host '~s'",
+            rabbit_log:error("AMQP 1.0: user '~ts' is not allowed to access virtual host '~ts'",
                 [User#user.username, vhost(Hostname)]),
             %% Let's skip the supervisor trace, this is an expected error
             throw({error, {not_allowed, User#user.username}});
@@ -742,6 +753,9 @@ info(Pid, InfoItems) ->
         UnknownItems -> throw({bad_argument, UnknownItems})
     end.
 
+info_internal(pid, #v1{}) -> self();
+info_internal(connection, #v1{connection = Val}) ->
+    Val;
 info_internal(node, #v1{}) -> node();
 info_internal(auth_mechanism, #v1{connection = #v1_connection{auth_mechanism = none}}) ->
     none;
@@ -756,11 +770,11 @@ info_internal(frame_max, #v1{connection = #v1_connection{frame_max = Val}}) ->
 info_internal(timeout, #v1{connection = #v1_connection{timeout_sec = Val}}) ->
     Val;
 info_internal(user,
-              #v1{connection = #v1_connection{user = #user{username = none}}}) ->
-    '';
-info_internal(username,
               #v1{connection = #v1_connection{user = #user{username = Val}}}) ->
     Val;
+info_internal(user,
+              #v1{connection = #v1_connection{user = none}}) ->
+    '';
 info_internal(state, #v1{connection_state = Val}) ->
     Val;
 info_internal(SockStat, S) when SockStat =:= recv_oct;

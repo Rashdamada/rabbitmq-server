@@ -114,6 +114,7 @@ dispatcher() ->
      {"/vhost-limits/:vhost",                                  rabbit_mgmt_wm_limits, []},
      {"/connections",                                          rabbit_mgmt_wm_connections, []},
      {"/connections/:connection",                              rabbit_mgmt_wm_connection, []},
+     {"/connections/username/:username",                       rabbit_mgmt_wm_connection_user_name, []},
      {"/connections/:connection/channels",                     rabbit_mgmt_wm_connection_channels, []},
      {"/channels",                                             rabbit_mgmt_wm_channels, []},
      {"/channels/:channel",                                    rabbit_mgmt_wm_channel, []},
@@ -181,5 +182,6 @@ dispatcher() ->
      {"/auth",                                                 rabbit_mgmt_wm_auth, []},
      {"/auth/attempts/:node",                                  rabbit_mgmt_wm_auth_attempts, [all]},
      {"/auth/attempts/:node/source",                           rabbit_mgmt_wm_auth_attempts, [by_source]},
-     {"/login",                                                rabbit_mgmt_wm_login, []}
+     {"/login",                                                rabbit_mgmt_wm_login, []},
+     {"/config/effective",                                     rabbit_mgmt_wm_environment, []}
     ].

@@ -24,7 +24,8 @@ all() ->
     [
         {group, parallel_tests},
         {group, parse_mem_limit},
-        {group, gen_server2}
+        {group, gen_server2},
+        {group, date_time}
     ].
 
 groups() ->
@@ -45,7 +46,7 @@ groups() ->
             amqp_table_conversion,
             name_type,
             get_erl_path,
-            date_time_parse_duration
+            hexify
         ]},
         {parse_mem_limit, [parallel], [
             parse_mem_limit_relative_exactly_max,
@@ -60,6 +61,10 @@ groups() ->
             stop_stats_timer_on_backoff,
             stop_stats_timer_on_backoff_when_backoff_less_than_stats_timeout,
             gen_server2_stop
+        ]},
+        {date_time, [parallel], [
+            date_time_parse_duration,
+            date_time_in_the_past
         ]}
     ].
 
@@ -249,7 +254,7 @@ parse_mem_limit_relative_exactly_max(_Config) ->
     case MemLimit of
         ?MAX_VM_MEMORY_HIGH_WATERMARK -> ok;
         _ ->    ct:fail(
-                    "Expected memory limit to be ~p, but it was ~p",
+                    "Expected memory limit to be ~tp, but it was ~tp",
                     [?MAX_VM_MEMORY_HIGH_WATERMARK, MemLimit]
                 )
     end.
@@ -259,7 +264,7 @@ parse_mem_relative_above_max(_Config) ->
     case MemLimit of
         ?MAX_VM_MEMORY_HIGH_WATERMARK -> ok;
         _ ->    ct:fail(
-                    "Expected memory limit to be ~p, but it was ~p",
+                    "Expected memory limit to be ~tp, but it was ~tp",
                     [?MAX_VM_MEMORY_HIGH_WATERMARK, MemLimit]
                 )
     end.
@@ -269,7 +274,7 @@ parse_mem_relative_integer(_Config) ->
     case MemLimit of
         ?MAX_VM_MEMORY_HIGH_WATERMARK -> ok;
         _ ->    ct:fail(
-                    "Expected memory limit to be ~p, but it was ~p",
+                    "Expected memory limit to be ~tp, but it was ~tp",
                     [?MAX_VM_MEMORY_HIGH_WATERMARK, MemLimit]
                 )
     end.
@@ -279,7 +284,7 @@ parse_mem_relative_invalid(_Config) ->
     case MemLimit of
         ?DEFAULT_VM_MEMORY_HIGH_WATERMARK -> ok;
         _ ->    ct:fail(
-                    "Expected memory limit to be ~p, but it was ~p",
+                    "Expected memory limit to be ~tp, but it was ~tp",
                     [?DEFAULT_VM_MEMORY_HIGH_WATERMARK, MemLimit]
                 )
     end.
@@ -289,8 +294,8 @@ platform_and_version(_Config) ->
     Result = rabbit_misc:platform_and_version(),
     RegExp = "^Erlang/OTP\s" ++ MajorVersion,
     case re:run(Result, RegExp) of
-        nomatch -> ct:fail("~p does not match ~p", [Result, RegExp]);
-        {error, ErrType} -> ct:fail("~p", [ErrType]);
+        nomatch -> ct:fail("~tp does not match ~tp", [Result, RegExp]);
+        {error, ErrType} -> ct:fail("~tp", [ErrType]);
         _ -> ok
     end.
 
@@ -462,6 +467,12 @@ get_erl_path(_) ->
     end,
     ok.
 
+hexify(_) ->
+    ?assertEqual(<<"68656C6C6F">>, rabbit_misc:hexify(<<"hello">>)),
+    ?assertEqual(<<"68656C6C6F">>, rabbit_misc:hexify("hello")),
+    ?assertEqual(<<"68656C6C6F">>, rabbit_misc:hexify(hello)),
+    ok.
+
 date_time_parse_duration(_) ->
     ?assertEqual(
         {ok, [{sign, "+"}, {years, 6}, {months, 3}, {days, 1}, {hours, 1}, {minutes, 1}, {seconds, 1}]},
@@ -481,3 +492,9 @@ date_time_parse_duration(_) ->
     ),
     ?assertEqual(error, rabbit_date_time:parse_duration("foo")),
     ok.
+
+date_time_in_the_past(_) ->
+    {Year, Month, Day} = rabbit_date_time:today(),
+
+    ?assertEqual(false, rabbit_date_time:is_in_the_past({Year + 1, Month, Day})),
+    ?assertEqual(true,  rabbit_date_time:is_in_the_past({Year - 3, Month, Day})).

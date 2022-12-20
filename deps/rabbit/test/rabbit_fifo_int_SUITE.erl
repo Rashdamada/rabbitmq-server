@@ -2,6 +2,7 @@
 
 %% rabbit_fifo and rabbit_fifo_client integration suite
 
+-compile(nowarn_export_all).
 -compile(export_all).
 
 -include_lib("common_test/include/ct.hrl").
@@ -30,6 +31,7 @@ all_tests() ->
      dequeue,
      discard,
      cancel_checkout,
+     lost_delivery,
      credit,
      untracked_enqueue,
      flow,
@@ -62,8 +64,7 @@ init_per_testcase(TestCase, Config) ->
     meck:expect(rabbit_quorum_queue, handle_tick, fun (_, _, _) -> ok end),
     meck:expect(rabbit_quorum_queue, file_handle_leader_reservation, fun (_) -> ok end),
     meck:expect(rabbit_quorum_queue, file_handle_other_reservation, fun () -> ok end),
-    meck:expect(rabbit_quorum_queue, cancel_consumer_handler,
-                fun (_, _) -> ok end),
+    meck:expect(rabbit_quorum_queue, cancel_consumer_handler, fun (_, _) -> ok end),
     ra_server_sup_sup:remove_all(?RA_SYSTEM),
     ServerName2 = list_to_atom(atom_to_list(TestCase) ++ "2"),
     ServerName3 = list_to_atom(atom_to_list(TestCase) ++ "3"),
@@ -86,10 +87,10 @@ basics(Config) ->
     ClusterName = ?config(cluster_name, Config),
     ServerId = ?config(node_id, Config),
     UId = ?config(uid, Config),
-    CustomerTag = UId,
+    ConsumerTag = UId,
     ok = start_cluster(ClusterName, [ServerId]),
     FState0 = rabbit_fifo_client:init(ClusterName, [ServerId]),
-    {ok, FState1} = rabbit_fifo_client:checkout(CustomerTag, 1, simple_prefetch,
+    {ok, FState1} = rabbit_fifo_client:checkout(ConsumerTag, 1, simple_prefetch,
                                                 #{}, FState0),
 
     rabbit_quorum_queue:wal_force_roll_over(node()),
@@ -97,49 +98,46 @@ basics(Config) ->
     timer:sleep(1000),
 
     {ok, FState2} = rabbit_fifo_client:enqueue(one, FState1),
-    % process ra events
-    FState3 = process_ra_event(FState2, ?RA_EVENT_TIMEOUT),
 
-    FState5 = receive
-                  {ra_event, From, Evt} ->
-                      case rabbit_fifo_client:handle_ra_event(From, Evt, FState3) of
-                          {ok, FState4,
-                           [{deliver, C, true,
-                             [{_Qname, _QRef, MsgId, _SomBool, _Msg}]}]} ->
-                              {S, _A} = rabbit_fifo_client:settle(C, [MsgId], FState4),
-                              S
-                      end
-              after 5000 ->
-                        exit(await_msg_timeout)
-              end,
+    DeliverFun = fun DeliverFun(S0, F) ->
+                         receive
+                             {ra_event, From, Evt} ->
+                                 ct:pal("ra_event ~p", [Evt]),
+                                 case rabbit_fifo_client:handle_ra_event(From, Evt, S0) of
+                                     {ok, S1,
+                                      [{deliver, C, true,
+                                        [{_Qname, _QRef, MsgId, _SomBool, _Msg}]}]} ->
+                                         {S, _A} = rabbit_fifo_client:F(C, [MsgId], S1),
+                                         %% settle applied event
+                                         process_ra_event(S, ?RA_EVENT_TIMEOUT);
+                                     {ok, S, _} ->
+                                         DeliverFun(S, F)
+                                 end
+                         after 5000 ->
+                                   flush(),
+                                   exit(await_delivery_timeout)
+                         end
+                 end,
 
-    % process settle applied notification
-    FState5b = process_ra_event(FState5, ?RA_EVENT_TIMEOUT),
+    FState5 = DeliverFun(FState2, settle),
+
     _ = rabbit_quorum_queue:stop_server(ServerId),
     _ = rabbit_quorum_queue:restart_server(ServerId),
 
     %% wait for leader change to notice server is up again
+    FState5b =
     receive
-        {ra_event, _, {machine, leader_change}} -> ok
+        {ra_event, From, Evt} ->
+            ct:pal("ra_event ~p", [Evt]),
+            {ok, F6, _} = rabbit_fifo_client:handle_ra_event(From, Evt, FState5),
+            F6
     after 5000 ->
               exit(leader_change_timeout)
     end,
 
     {ok, FState6} = rabbit_fifo_client:enqueue(two, FState5b),
-    % process applied event
-    FState6b = process_ra_event(FState6, ?RA_EVENT_TIMEOUT),
+    _FState8 = DeliverFun(FState6, return),
 
-    receive
-        {ra_event, Frm, E} ->
-            case rabbit_fifo_client:handle_ra_event(Frm, E, FState6b) of
-                {ok, FState7, [{deliver, Ctag, true,
-                                [{_, _, Mid, _, two}]}]} ->
-                    {_, _} = rabbit_fifo_client:return(Ctag, [Mid], FState7),
-                    ok
-            end
-    after 2000 ->
-              exit(await_msg_timeout)
-    end,
     rabbit_quorum_queue:stop_server(ServerId),
     ok.
 
@@ -411,6 +409,38 @@ cancel_checkout(Config) ->
     {ok, _, {_, _, _, _, m1}, F5} = rabbit_fifo_client:dequeue(<<"d1">>, settled, F5),
     ok.
 
+lost_delivery(Config) ->
+    ClusterName = ?config(cluster_name, Config),
+    ServerId = ?config(node_id, Config),
+    ok = start_cluster(ClusterName, [ServerId]),
+    F0 = rabbit_fifo_client:init(ClusterName, [ServerId], 4),
+    {ok, F1} = rabbit_fifo_client:enqueue(m1, F0),
+    {_, _, F2} = process_ra_events(
+                   receive_ra_events(1, 0), F1, [], [], fun (_, S) -> S end),
+    {ok, F3} = rabbit_fifo_client:checkout(<<"tag">>, 10, simple_prefetch, #{}, F2),
+    %% drop a delivery, simulating e.g. a full distribution buffer
+    receive
+        {ra_event, _, Evt} ->
+            ct:pal("dropping event ~tp", [Evt]),
+            ok
+    after 500 ->
+              exit(await_ra_event_timeout)
+    end,
+    % send another message
+    {ok, F4} = rabbit_fifo_client:enqueue(m2, F3),
+    %% this hsould trigger the fifo client to fetch any missing messages
+    %% from the server
+    {_, _, _F5} = process_ra_events(
+                    receive_ra_events(1, 1), F4, [], [],
+                    fun ({deliver, _, _, Dels}, S) ->
+                            [{_, _, _, _, M1},
+                             {_, _, _, _, M2}] = Dels,
+                            ?assertEqual(m1, M1),
+                            ?assertEqual(m2, M2),
+                            S
+                    end),
+    ok.
+
 credit(Config) ->
     ClusterName = ?config(cluster_name, Config),
     ServerId = ?config(node_id, Config),
@@ -434,7 +464,7 @@ credit(Config) ->
     %% credit and drain
     {F8, []} = rabbit_fifo_client:credit(<<"tag">>, 4, true, F7),
     {[{_, _, _, _, m2}], [{send_credit_reply, _}, {send_drained, _}], F9} =
-        process_ra_events(receive_ra_events(1, 1), F8),
+        process_ra_events(receive_ra_events(2, 1), F8),
     flush(),
 
     %% enqueue another message - at this point the consumer credit should be
@@ -545,17 +575,20 @@ conf(ClusterName, UId, ServerId, _, Peers) ->
 process_ra_event(State, Wait) ->
     receive
         {ra_event, From, Evt} ->
+            ct:pal("Ra_event ~p", [Evt]),
             {ok, S, _Actions} =
-                rabbit_fifo_client:handle_ra_event(From, Evt, State),
+            rabbit_fifo_client:handle_ra_event(From, Evt, State),
             S
     after Wait ->
+              flush(),
               exit(ra_event_timeout)
     end.
 
 receive_ra_events(Applied, Deliveries) ->
     receive_ra_events(Applied, Deliveries, []).
 
-receive_ra_events(Applied, Deliveries, Acc) when Applied =< 0, Deliveries =< 0->
+receive_ra_events(Applied, Deliveries, Acc)
+  when Applied =< 0 andalso Deliveries =< 0 ->
     %% what if we get more events? Testcases should check what they're!
     lists:reverse(Acc);
 receive_ra_events(Applied, Deliveries, Acc) ->
@@ -592,7 +625,8 @@ process_ra_events(Events, State) ->
 
 process_ra_events([], State0, Acc, Actions0, _DeliveryFun) ->
     {Acc, Actions0, State0};
-process_ra_events([{ra_event, From, Evt} | Events], State0, Acc, Actions0, DeliveryFun) ->
+process_ra_events([{ra_event, From, Evt} | Events], State0, Acc,
+                  Actions0, DeliveryFun) ->
     case rabbit_fifo_client:handle_ra_event(From, Evt, State0) of
         {ok, State1, Actions1} ->
             {Msgs, Actions, State} =

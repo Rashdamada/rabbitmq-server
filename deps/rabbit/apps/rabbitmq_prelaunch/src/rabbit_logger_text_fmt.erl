@@ -29,6 +29,16 @@ format_prefix([Var | Rest], LogEvent, Config, Prefix)
   when is_atom(Var) ->
     String = format_var(Var, LogEvent, Config),
     format_prefix(Rest, LogEvent, Config, [String | Prefix]);
+format_prefix([{Var, Then, Else} | Rest], #{meta := Meta} = LogEvent, Config, Prefix)
+    when is_atom(Var) ->
+    String =
+	case maps:get(Var, Meta, undefined) of
+	    undefined ->
+		format_prefix(Else, LogEvent, Config, []);
+	    _Value ->
+		format_prefix(Then, LogEvent, Config, [])
+	end,
+    format_prefix(Rest, LogEvent, Config, [String | Prefix]);
 format_prefix([], _, _, Prefix) ->
     lists:reverse(Prefix).
 
@@ -39,11 +49,11 @@ format_var(time, #{meta := #{time := Timestamp}}, Config) ->
 format_var(Var, #{meta := Meta}, _) ->
     case maps:get(Var, Meta, undefined) of
         undefined ->
-            io_lib:format("<unknown ~s>", [Var]);
+            io_lib:format("<unknown ~ts>", [Var]);
         Value ->
             case io_lib:char_list(Value) of
-                true  -> io_lib:format("~s", [Value]);
-                false -> io_lib:format("~p", [Value])
+                true  -> io_lib:format("~ts", [Value]);
+                false -> io_lib:format("~tp", [Value])
             end
     end.
 

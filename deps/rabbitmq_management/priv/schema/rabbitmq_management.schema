@@ -307,7 +307,7 @@ end}.
 
 
 %%
-%% CORS
+%% CORS (https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS)
 %%
 
 {mapping, "management.cors.allow_origins", "rabbitmq_management.cors_allow_origins", [
@@ -371,6 +371,50 @@ fun(Conf) ->
     end
 end}.
 
+%% X-Content-Type-Options (https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/X-Content-Type-Options)
+
+{mapping, "management.headers.content_type_options", "rabbitmq_management.headers.content_type_options", [
+    {datatype, string}
+]}.
+
+{translation, "rabbitmq_management.headers.content_type_options",
+fun(Conf) ->
+    case cuttlefish:conf_get("management.headers.content_type_options", Conf, undefined) of
+        undefined -> cuttlefish:unset();
+        Value     -> Value
+    end
+end}.
+
+%% X-XSS-Protection (https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/X-XSS-Protection)
+
+{mapping, "management.headers.xss_protection", "rabbitmq_management.headers.xss_protection", [
+    {datatype, string}
+]}.
+
+{translation, "rabbitmq_management.headers.xss_protection",
+fun(Conf) ->
+    case cuttlefish:conf_get("management.headers.xss_protection", Conf, undefined) of
+        undefined -> cuttlefish:unset();
+        Value     -> Value
+    end
+end}.
+
+
+%% X-Frame-Options (https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/X-Frame-Options)
+
+{mapping, "management.headers.frame_options", "rabbitmq_management.headers.frame_options", [
+    {datatype, string}
+]}.
+
+{translation, "rabbitmq_management.headers.frame_options",
+fun(Conf) ->
+    case cuttlefish:conf_get("management.headers.frame_options", Conf, undefined) of
+        undefined -> cuttlefish:unset();
+        Value     -> Value
+    end
+end}.
+
+
 %% OAuth 2/SSO access only
 
 {mapping, "management.disable_basic_auth", "rabbitmq_management.disable_basic_auth",
@@ -388,14 +432,48 @@ end}.
 %% ===========================================================================
 %% Authorization
 
+%% Configure OAuth2 in the management ui to work with old versions of UAA (which versions?)
 {mapping, "management.enable_uaa", "rabbitmq_management.enable_uaa",
     [{datatype, {enum, [true, false]}}]}.
 
+%% Your client application's identifier as registered with the OIDC/OAuth2. Deprecated, switch to oauth_client_id
 {mapping, "management.uaa_client_id", "rabbitmq_management.uaa_client_id",
+      [{datatype, string}]}.
+{mapping, "management.uaa_client_secret", "rabbitmq_management.uaa_client_secret",
+      [{datatype, string}]}.
+
+%% The URL of the OIDC/OAuth2 provider
+{mapping, "management.uaa_location", "rabbitmq_management.uaa_location",
+      [{datatype, string}]}.
+
+%% Enable OAuth2 in the management ui
+{mapping, "management.oauth_enabled", "rabbitmq_management.oauth_enabled",
+    [{datatype, {enum, [true, false]}}]}.
+
+%% The URL of the OIDC/OAuth2 provider
+{mapping, "management.oauth_provider_url", "rabbitmq_management.oauth_provider_url",
+      [{datatype, string}]}.
+
+%% Your client application's identifier as registered with the OIDC/OAuth2
+{mapping, "management.oauth_client_id", "rabbitmq_management.oauth_client_id",
+      [{datatype, string}]}.
+{mapping, "management.oauth_client_secret", "rabbitmq_management.oauth_client_secret",
+      [{datatype, string}]}.
+
+%% Configure OAuth2 authorization flow (defaults to code)
+{mapping, "management.oauth_response_type", "rabbitmq_management.oauth_response_type",
     [{datatype, string}]}.
 
-{mapping, "management.uaa_location", "rabbitmq_management.uaa_location",
-    [{datatype, string}]}.
+%% The scopes RabbitMq should claim during the authorization flow. Defaults to "openid profile"
+{mapping, "management.oauth_scopes", "rabbitmq_management.oauth_scopes",
+      [{datatype, string}]}.
+
+%% The URL of the OIDC discovery url where the provider is listening on
+%% by default it is <oauth_provider_url>/.well-known/openid-configuration which is the
+%% default OIDC discovery endpoint
+{mapping, "management.oauth_metadata_url", "rabbitmq_management.oauth_metadata_url",
+      [{datatype, string}]}.
+
 
 %% ===========================================================================
 

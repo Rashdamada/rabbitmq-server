@@ -16,7 +16,7 @@
          needs_timeout/1, timeout/1, handle_pre_hibernate/1, resume/1,
          msg_rates/1, info/2, invoke/3, is_duplicate/2, set_queue_mode/2,
          set_queue_version/2,
-         zip_msgs_and_acks/4, handle_info/2]).
+         zip_msgs_and_acks/4]).
 
 -export([start/2, stop/1, delete_crashed/1]).
 
@@ -122,7 +122,7 @@ init_with_existing_bq(Q0, BQ, BQS) when ?is_amqqueue(Q0) ->
                backing_queue_state = BQS,
                seen_status         = #{},
                confirmed           = [],
-               known_senders       = sets:new(),
+               known_senders       = sets:new([{version, 2}]),
                wait_timeout        = rabbit_misc:get_env(rabbit, slave_wait_timeout, 15000)};
     {error, Reason} ->
         %% The GM can shutdown before the coordinator has started up
@@ -153,7 +153,7 @@ sync_mirrors(HandleInfo, EmitStats,
                   rabbit_mirror_queue_misc:log_info(
                     QName, "Synchronising: " ++ Fmt ++ "", Params)
           end,
-    Log("~p messages to synchronise", [BQ:len(BQS)]),
+    Log("~tp messages to synchronise", [BQ:len(BQS)]),
     {ok, Q} = rabbit_amqqueue:lookup(QName),
     SPids = amqqueue:get_slave_pids(Q),
     SyncBatchSize = rabbit_mirror_queue_misc:sync_batch_size(Q),
@@ -168,7 +168,7 @@ sync_mirrors(HandleInfo, EmitStats,
         {cancelled, BQS1}      -> Log(" synchronisation cancelled ", []),
                                   {ok, S(BQS1)};
         {shutdown,  R, BQS1}   -> {stop, R, S(BQS1)};
-        {sync_died, R, BQS1}   -> Log("~p", [R]),
+        {sync_died, R, BQS1}   -> Log("~tp", [R]),
                                   {ok, S(BQS1)};
         {already_synced, BQS1} -> {ok, S(BQS1)};
         {ok, BQS1}             -> Log("complete", []),
@@ -176,9 +176,9 @@ sync_mirrors(HandleInfo, EmitStats,
     end.
 
 log_mirror_sync_config(Log, SyncBatchSize, 0) ->
-  Log("batch size: ~p", [SyncBatchSize]);
+  Log("batch size: ~tp", [SyncBatchSize]);
 log_mirror_sync_config(Log, SyncBatchSize, SyncThroughput) ->
-  Log("max batch size: ~p; max sync throughput: ~p bytes/s", [SyncBatchSize, SyncThroughput]).
+  Log("max batch size: ~tp; max sync throughput: ~tp bytes/s", [SyncBatchSize, SyncThroughput]).
 
 terminate({shutdown, dropped} = Reason,
           State = #state { backing_queue       = BQ,
@@ -417,10 +417,6 @@ timeout(State = #state { backing_queue = BQ, backing_queue_state = BQS }) ->
 handle_pre_hibernate(State = #state { backing_queue       = BQ,
                                       backing_queue_state = BQS }) ->
     State #state { backing_queue_state = BQ:handle_pre_hibernate(BQS) }.
-
-handle_info(Msg, State = #state { backing_queue       = BQ,
-                                  backing_queue_state = BQS }) ->
-    State #state { backing_queue_state = BQ:handle_info(Msg, BQS) }.
 
 resume(State = #state { backing_queue       = BQ,
                         backing_queue_state = BQS }) ->

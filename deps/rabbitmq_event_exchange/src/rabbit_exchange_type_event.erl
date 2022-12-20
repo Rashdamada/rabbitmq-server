@@ -7,6 +7,8 @@
 
 -module(rabbit_exchange_type_event).
 
+-behaviour(gen_event).
+
 -include_lib("rabbit_common/include/rabbit.hrl").
 -include_lib("rabbit_common/include/rabbit_framing.hrl").
 -include("rabbit_event_exchange.hrl").
@@ -36,12 +38,12 @@ info(_X) -> [].
 info(_X, _) -> [].
 
 register() ->
-    rabbit_exchange:declare(exchange(), topic, true, false, true, [],
-                            ?INTERNAL_USER),
+    _ = rabbit_exchange:declare(exchange(), topic, true, false, true, [],
+                                ?INTERNAL_USER),
     gen_event:add_handler(rabbit_event, ?MODULE, []).
 
 unregister() ->
-    rabbit_exchange:delete(exchange(), false, ?INTERNAL_USER),
+    _ = rabbit_exchange:delete(exchange(), false, ?INTERNAL_USER),
     gen_event:delete_handler(rabbit_event, ?MODULE, []).
 
 exchange() ->
@@ -71,7 +73,7 @@ handle_event(#event{type      = Type,
                     props     = Props,
                     timestamp = TS,
                     reference = none}, #state{vhost = VHost} = State) ->
-    case key(Type) of
+    _ = case key(Type) of
         ignore -> ok;
         Key    ->
                   Props2 = [{<<"timestamp_in_ms">>, TS} | Props],

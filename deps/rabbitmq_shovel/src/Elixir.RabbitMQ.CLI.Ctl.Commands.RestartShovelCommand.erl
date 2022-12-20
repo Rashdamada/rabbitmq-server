@@ -11,8 +11,6 @@
 
 -behaviour('Elixir.RabbitMQ.CLI.CommandBehaviour').
 
--ignore_xref({'Elixir.RabbitMQ.CLI.DefaultOutput', output, 1}).
-
 -export([
          usage/0,
          usage_additional/0,
@@ -59,7 +57,7 @@ run([Name], #{node := Node, vhost := VHost}) ->
             Error;
         Xs when is_list(Xs) ->
             ErrMsg = rabbit_misc:format("Shovel with the given name was not found "
-                                        "on the target node '~s' and / or virtual host '~s'",
+                                        "on the target node '~ts' and / or virtual host '~ts'",
                                         [Node, VHost]),
             case rabbit_shovel_status:find_matching_shovel(VHost, Name, Xs) of
                 undefined ->

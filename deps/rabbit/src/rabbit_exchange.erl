@@ -15,7 +15,7 @@
          update_scratch/3, update_decorators/1, immutable/1,
          info_keys/0, info/1, info/2, info_all/1, info_all/2, info_all/4,
          route/2, delete/3, validate_binding/2, count/0]).
--export([list_names/0, is_amq_prefixed/1]).
+-export([list_names/0]).
 %% these must be run inside a mnesia tx
 -export([maybe_auto_delete/2, serial/1, peek_serial/1, update/2]).
 
@@ -93,18 +93,6 @@ serial(#exchange{name = XName} = X) ->
         (false) -> none
     end.
 
--spec is_amq_prefixed(rabbit_types:exchange() | binary()) -> boolean().
-
-is_amq_prefixed(Name) when is_binary(Name) ->
-    case re:run(Name, <<"^amq\.">>) of
-        nomatch    -> false;
-        {match, _} -> true
-    end;
-is_amq_prefixed(#exchange{name = #resource{name = <<>>}}) ->
-    false;
-is_amq_prefixed(#exchange{name = #resource{name = Name}}) ->
-    is_amq_prefixed(Name).
-
 -spec declare
         (name(), type(), boolean(), boolean(), boolean(),
          rabbit_framing:amqp_table(), rabbit_types:username())
@@ -149,7 +137,7 @@ declare(XName, Type, Durable, AutoDelete, Internal, Args, Username) ->
                       Err
               end);
         _ ->
-            rabbit_log:warning("ignoring exchange.declare for exchange ~p,
+            rabbit_log:warning("ignoring exchange.declare for exchange ~tp,
                                 exchange.delete in progress~n.", [XName]),
             X
     end.
@@ -167,8 +155,7 @@ store(X = #exchange{durable = false}) ->
 
 store_ram(X) ->
     X1 = rabbit_exchange_decorator:set(X),
-    ok = mnesia:write(rabbit_exchange, rabbit_exchange_decorator:set(X1),
-                      write),
+    ok = mnesia:write(rabbit_exchange, X1, write),
     X1.
 
 %% Used with binaries sent over the wire; the type may not exist.
@@ -180,12 +167,12 @@ check_type(TypeBin) ->
     case rabbit_registry:binary_to_type(rabbit_data_coercion:to_binary(TypeBin)) of
         {error, not_found} ->
             rabbit_misc:protocol_error(
-              command_invalid, "unknown exchange type '~s'", [TypeBin]);
+              command_invalid, "unknown exchange type '~ts'", [TypeBin]);
         T ->
             case rabbit_registry:lookup_module(exchange, T) of
                 {error, not_found} -> rabbit_misc:protocol_error(
                                         command_invalid,
-                                        "invalid exchange type '~s'", [T]);
+                                        "invalid exchange type '~ts'", [T]);
                 {ok, _Module}      -> T
             end
     end.
@@ -578,7 +565,7 @@ peek_serial(XName, LockType) ->
     end.
 
 invalid_module(T) ->
-    rabbit_log:warning("Could not find exchange type ~s.", [T]),
+    rabbit_log:warning("Could not find exchange type ~ts.", [T]),
     put({xtype_to_module, T}, rabbit_exchange_type_invalid),
     rabbit_exchange_type_invalid.
 

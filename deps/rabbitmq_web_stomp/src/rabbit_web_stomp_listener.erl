@@ -52,8 +52,8 @@ init() ->
     ok.
 
 stop(State) ->
-    rabbit_networking:stop_ranch_listener_of_protocol(?TCP_PROTOCOL),
-    rabbit_networking:stop_ranch_listener_of_protocol(?TLS_PROTOCOL),
+    _ = rabbit_networking:stop_ranch_listener_of_protocol(?TCP_PROTOCOL),
+    _ = rabbit_networking:stop_ranch_listener_of_protocol(?TLS_PROTOCOL),
     State.
 
 -spec list_connections() -> [pid()].
@@ -114,19 +114,19 @@ start_tcp_listener(TCPConf0, CowboyOpts0, Routes) ->
       {error, {already_started, _}} -> ok;
       {error, ErrTCP}                  ->
           rabbit_log_connection:error(
-              "Failed to start a WebSocket (HTTP) listener. Error: ~p,"
-              " listener settings: ~p",
+              "Failed to start a WebSocket (HTTP) listener. Error: ~tp,"
+              " listener settings: ~tp",
               [ErrTCP, TCPConf]),
           throw(ErrTCP)
   end,
   listener_started(?TCP_PROTOCOL, TCPConf),
   rabbit_log_connection:info(
-      "rabbit_web_stomp: listening for HTTP connections on ~s:~w",
+      "rabbit_web_stomp: listening for HTTP connections on ~ts:~w",
       [get_binding_address(TCPConf), Port]).
 
 
 start_tls_listener(TLSConf0, CowboyOpts0, Routes) ->
-  rabbit_networking:ensure_ssl(),
+  _ = rabbit_networking:ensure_ssl(),
   NumSslAcceptors = case application:get_env(rabbitmq_web_stomp, num_ssl_acceptors) of
       undefined     -> get_env(num_acceptors, 10);
       {ok, NumSsl}  -> NumSsl
@@ -153,14 +153,14 @@ start_tls_listener(TLSConf0, CowboyOpts0, Routes) ->
       {error, {already_started, _}} -> ok;
       {error, ErrTLS}                  ->
           rabbit_log_connection:error(
-              "Failed to start a TLS WebSocket (HTTPS) listener. Error: ~p,"
-              " listener settings: ~p",
+              "Failed to start a TLS WebSocket (HTTPS) listener. Error: ~tp,"
+              " listener settings: ~tp",
               [ErrTLS, TLSConf]),
           throw(ErrTLS)
   end,
   listener_started(?TLS_PROTOCOL, TLSConf),
   rabbit_log_connection:info(
-      "rabbit_web_stomp: listening for HTTPS connections on ~s:~w",
+      "rabbit_web_stomp: listening for HTTPS connections on ~ts:~w",
       [get_binding_address(TLSConf), TLSPort]).
 
 listener_started(Protocol, Listener) ->

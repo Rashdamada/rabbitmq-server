@@ -18,10 +18,10 @@
 -export([set_maximum_since_use/2, info/1, go/2]).
 
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2,
-         code_change/3, handle_pre_hibernate/1, prioritise_call/4,
-         prioritise_cast/3, prioritise_info/3, format_message_queue/2]).
+         code_change/3, handle_pre_hibernate/1, format_message_queue/2]).
 
--export([joined/2, members_changed/3, handle_msg/3, handle_terminate/2]).
+-export([joined/2, members_changed/3, handle_msg/3, handle_terminate/2,
+        prioritise_cast/3, prioritise_info/3]).
 
 -behaviour(gen_server2).
 -behaviour(gm).
@@ -65,6 +65,19 @@
 
 set_maximum_since_use(QPid, Age) ->
     gen_server2:cast(QPid, {set_maximum_since_use, Age}).
+
+
+prioritise_cast(Msg, _Len, _State) ->
+    case Msg of
+        {run_backing_queue, _Mod, _Fun}      -> 6;
+        _                                    -> 0
+    end.
+
+prioritise_info(Msg, _Len, _State) ->
+    case Msg of
+        sync_timeout                         -> 6;
+        _                                    -> 0
+    end.
 
 info(QPid) -> gen_server2:call(QPid, info, infinity).
 
@@ -137,7 +150,7 @@ handle_go(Q0) when ?is_amqqueue(Q0) ->
             {ok, State};
         {stale, StalePid} ->
             rabbit_mirror_queue_misc:log_warning(
-              QName, "Detected stale classic mirrored queue leader: ~p", [StalePid]),
+              QName, "Detected stale classic mirrored queue leader: ~tp", [StalePid]),
             gm:leave(GM),
             {error, {stale_master_pid, StalePid}};
         duplicate_live_master ->
@@ -189,7 +202,7 @@ init_it(Self, GM, Node, QName) ->
 stop_pending_slaves(QName, Pids) ->
     [begin
          rabbit_mirror_queue_misc:log_warning(
-           QName, "Detected a non-responsive classic queue mirror, stopping it: ~p", [Pid]),
+           QName, "Detected a non-responsive classic queue mirror, stopping it: ~tp", [Pid]),
          case erlang:process_info(Pid, dictionary) of
              undefined -> ok;
              {dictionary, Dict} ->
@@ -385,14 +398,6 @@ handle_info({bump_credit, Msg}, State) ->
     credit_flow:handle_bump_msg(Msg),
     noreply(State);
 
-handle_info(bump_reduce_memory_use, State = #state{backing_queue       = BQ,
-                                                backing_queue_state = BQS}) ->
-    BQS1 = BQ:handle_info(bump_reduce_memory_use, BQS),
-    BQS2 = BQ:resume(BQS1),
-    noreply(State#state{
-        backing_queue_state = BQS2
-    });
-
 %% In the event of a short partition during sync we can detect the
 %% master's 'death', drop out of sync, and then receive sync messages
 %% which were still in flight. Ignore them.
@@ -453,29 +458,6 @@ handle_pre_hibernate(State = #state { backing_queue       = BQ,
     BQS2 = BQ:set_ram_duration_target(DesiredDuration, BQS1),
     BQS3 = BQ:handle_pre_hibernate(BQS2),
     {hibernate, stop_rate_timer(State #state { backing_queue_state = BQS3 })}.
-
-prioritise_call(Msg, _From, _Len, _State) ->
-    case Msg of
-        info                                 -> 9;
-        {gm_deaths, _Dead}                   -> 5;
-        _                                    -> 0
-    end.
-
-prioritise_cast(Msg, _Len, _State) ->
-    case Msg of
-        {set_ram_duration_target, _Duration} -> 8;
-        {set_maximum_since_use, _Age}        -> 8;
-        {run_backing_queue, _Mod, _Fun}      -> 6;
-        {gm, _Msg}                           -> 5;
-        _                                    -> 0
-    end.
-
-prioritise_info(Msg, _Len, _State) ->
-    case Msg of
-        update_ram_duration                  -> 8;
-        sync_timeout                         -> 6;
-        _                                    -> 0
-    end.
 
 format_message_queue(Opt, MQ) -> rabbit_misc:format_message_queue(Opt, MQ).
 
@@ -646,7 +628,7 @@ promote_me(From, #state { q                   = Q0,
                           msg_id_status       = MS,
                           known_senders       = KS}) when ?is_amqqueue(Q0) ->
     QName = amqqueue:get_name(Q0),
-    rabbit_mirror_queue_misc:log_info(QName, "Promoting mirror ~s to leader",
+    rabbit_mirror_queue_misc:log_info(QName, "Promoting mirror ~ts to leader",
                                       [rabbit_misc:pid_to_string(self())]),
     Q1 = amqqueue:set_pid(Q0, self()),
     DeathFun = rabbit_mirror_queue_master:sender_death_fun(),
@@ -886,7 +868,7 @@ maybe_enqueue_message(
 
 get_sender_queue(ChPid, SQ) ->
     case maps:find(ChPid, SQ) of
-        error     -> {queue:new(), sets:new(), running};
+        error     -> {queue:new(), sets:new([{version, 2}]), running};
         {ok, Val} -> Val
     end.
 

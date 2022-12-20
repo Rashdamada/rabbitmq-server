@@ -18,7 +18,7 @@
                                 assert_keys/2, assert_no_keys/2,
                                 http_get/2, http_get/3, http_get/5,
                                 http_get_no_auth/3,
-                                http_get_as_proplist/2,
+                                http_get_no_decode/5,
                                 http_put/4, http_put/6,
                                 http_post/4, http_post/6,
                                 http_upload_raw/8,
@@ -39,18 +39,13 @@
 all() ->
     [
      {group, all_tests_with_prefix},
-     {group, all_tests_without_prefix},
-     {group, user_limits_ff}
+     {group, all_tests_without_prefix}
     ].
 
 groups() ->
     [
      {all_tests_with_prefix, [], all_tests()},
-     {all_tests_without_prefix, [], all_tests()},
-     {user_limits_ff, [], [
-        user_limits_list_test,
-        user_limit_set_test
-     ]}
+     {all_tests_without_prefix, [], all_tests()}
     ].
 
 all_tests() -> [
@@ -88,7 +83,6 @@ all_tests() -> [
     queues_test,
     quorum_queues_test,
     stream_queues_have_consumers_field,
-    queues_well_formed_json_test,
     bindings_test,
     bindings_post_test,
     bindings_null_routing_key_test,
@@ -105,6 +99,7 @@ all_tests() -> [
     definitions_remove_things_test,
     definitions_server_named_queue_test,
     definitions_with_charset_test,
+    definitions_default_queue_type_test,
     long_definitions_test,
     long_definitions_multipart_test,
     aliveness_test,
@@ -146,11 +141,14 @@ all_tests() -> [
     rates_test,
     single_active_consumer_cq_test,
     single_active_consumer_qq_test,
-    oauth_test,
+%%    oauth_test,  %% disabled until we are able to enable oauth2 plugin
     disable_basic_auth_test,
     login_test,
     csp_headers_test,
-    auth_attempts_test
+    auth_attempts_test,
+    user_limits_list_test,
+    user_limit_set_test,
+    config_environment_test
 ].
 
 %% -------------------------------------------------------------------
@@ -182,51 +180,14 @@ finish_init(Group, Config) ->
     Config1 = rabbit_ct_helpers:set_config(Config, NodeConf),
     merge_app_env(Config1).
 
-enable_feature_flag_or_skip(FFName, Group, Config0) ->
-    Config1 = finish_init(Group, Config0),
-    Config2 = start_broker(Config1),
-    Nodes = rabbit_ct_broker_helpers:get_node_configs(
-              Config2, nodename),
-    Ret = rabbit_ct_broker_helpers:rpc(
-            Config2, 0,
-            rabbit_feature_flags,
-            is_supported_remotely,
-            [Nodes, [FFName], 60000]),
-    case Ret of
-        true ->
-            ok = rabbit_ct_broker_helpers:rpc(
-                    Config2, 0, rabbit_feature_flags, enable, [FFName]),
-            Config2;
-        false ->
-            end_per_group(Group, Config2),
-            {skip, rabbit_misc:format("Feature flag '~s' is not supported", [FFName])}
-    end.
-
 init_per_group(all_tests_with_prefix=Group, Config0) ->
     PathConfig = {rabbitmq_management, [{path_prefix, ?PATH_PREFIX}]},
     Config1 = rabbit_ct_helpers:merge_app_env(Config0, PathConfig),
     Config2 = finish_init(Group, Config1),
-    Config3 = start_broker(Config2),
-    Nodes = rabbit_ct_broker_helpers:get_node_configs(
-              Config3, nodename),
-    Ret = rabbit_ct_broker_helpers:rpc(
-            Config3, 0,
-            rabbit_feature_flags,
-            is_supported_remotely,
-            [Nodes, [quorum_queue], 60000]),
-    case Ret of
-        true ->
-            ok = rabbit_ct_broker_helpers:rpc(
-                    Config3, 0, rabbit_feature_flags, enable, [quorum_queue]),
-            Config3;
-        false ->
-            end_per_group(Group, Config3),
-            {skip, "Quorum queues are unsupported"}
-    end;
-init_per_group(user_limits_ff = Group, Config0) ->
-    enable_feature_flag_or_skip(user_limits, Group, Config0);
+    start_broker(Config2);
 init_per_group(Group, Config0) ->
-    enable_feature_flag_or_skip(quorum_queue, Group, Config0).
+    Config1 = finish_init(Group, Config0),
+    start_broker(Config1).
 
 end_per_group(_, Config) ->
     inets:stop(),
@@ -299,6 +260,10 @@ end_per_testcase0(permissions_vhost_test, Config) ->
     rabbit_ct_broker_helpers:delete_vhost(Config, <<"myvhost2">>),
     rabbit_ct_broker_helpers:delete_user(Config, <<"myuser1">>),
     rabbit_ct_broker_helpers:delete_user(Config, <<"myuser2">>),
+    Config;
+end_per_testcase0(config_environment_test, Config) ->
+    rabbit_ct_broker_helpers:rpc(Config, 0, application, unset_env,
+                                 [rabbit, config_environment_test_env]),
     Config;
 end_per_testcase0(_, Config) -> Config.
 
@@ -419,6 +384,8 @@ assert_percentage(Breakdown0, ExtraMargin) ->
             ok
     end.
 
+println(What) -> io:format("~tp~n", [What]).
+
 auth_test(Config) ->
     http_put(Config, "/users/user", [{password, <<"user">>},
                                      {tags, <<"">>}], {group, '2xx'}),
@@ -469,21 +436,13 @@ vhosts_test(Config) ->
     passed.
 
 vhosts_description_test(Config) ->
-    Ret = rabbit_ct_broker_helpers:enable_feature_flag(
-            Config, virtual_host_metadata),
-
     http_put(Config, "/vhosts/myvhost", [{description, <<"vhost description">>},
                                          {tags, <<"tag1,tag2">>}], {group, '2xx'}),
-    Expected = case Ret of
-                   {skip, _} ->
-                       #{name => <<"myvhost">>};
-                   _ ->
-                       #{name => <<"myvhost">>,
-                         metadata => #{
-                           description => <<"vhost description">>,
-                           tags => [<<"tag1">>, <<"tag2">>]
-                          }}
-               end,
+    Expected = #{name => <<"myvhost">>,
+                 metadata => #{
+                               description => <<"vhost description">>,
+                               tags => [<<"tag1">>, <<"tag2">>]
+                              }},
     assert_item(Expected, http_get(Config, "/vhosts/myvhost")),
 
     %% Delete it
@@ -1126,23 +1085,6 @@ stream_queues_have_consumers_field(Config) ->
     http_delete(Config, "/queues/%2f/sq", {group, '2xx'}),
     ok.
 
-queues_well_formed_json_test(Config) ->
-    %% TODO This test should be extended to the whole API
-    Good = [{durable, true}],
-    http_put(Config, "/queues/%2F/foo", Good, {group, '2xx'}),
-    http_put(Config, "/queues/%2F/baz", Good, {group, '2xx'}),
-
-    Queues = http_get_as_proplist(Config, "/queues/%2F"),
-    %% Ensure keys are unique
-    [begin
-         Q = rabbit_data_coercion:to_proplist(Q0),
-         ?assertEqual(lists:sort(Q), lists:usort(Q))
-     end || Q0 <- Queues],
-
-    http_delete(Config, "/queues/%2F/foo", {group, '2xx'}),
-    http_delete(Config, "/queues/%2F/baz", {group, '2xx'}),
-    passed.
-
 bindings_test(Config) ->
     XArgs = [{type, <<"direct">>}],
     QArgs = #{},
@@ -1732,10 +1674,33 @@ long_definitions_vhosts(long_definitions_multipart_test) ->
     [#{name => <<"long_definitions_test-", Bin/binary, (integer_to_binary(N))/binary>>} ||
      N <- lists:seq(1, 16)].
 
+defs_default_queue_type_vhost(Config, QueueType) ->
+    register_parameters_and_policy_validator(Config),
+
+    %% Create a test vhost
+    http_put(Config, "/vhosts/test-vhost", #{defaultqueuetype => QueueType}, {group, '2xx'}),
+    PermArgs = [{configure, <<".*">>}, {write, <<".*">>}, {read, <<".*">>}],
+    http_put(Config, "/permissions/test-vhost/guest", PermArgs, {group, '2xx'}),
+
+    %% Import queue definition without an explicit queue type
+    http_post(Config, "/definitions/test-vhost",
+              #{queues => [#{name => <<"test-queue">>, durable => true}]},
+              {group, '2xx'}),
+
+    %% And check whether it was indeed created with the default type
+    Q = http_get(Config, "/queues/test-vhost/test-queue", ?OK),
+    ?assertEqual(QueueType, maps:get(type, Q)),
+
+    %% Remove the test vhost
+    http_delete(Config, "/vhosts/test-vhost", {group, '2xx'}),
+    ok.
+
+definitions_default_queue_type_test(Config) ->
+    defs_default_queue_type_vhost(Config, <<"classic">>),
+    defs_default_queue_type_vhost(Config, <<"quorum">>).
+
 defs_vhost(Config, Key, URI, CreateMethod, Args) ->
     Rep1 = fun (S, S2) -> re:replace(S, "<vhost>", S2, [{return, list}]) end,
-    ReplaceVHostInArgs = fun(M, V2) -> maps:map(fun(vhost, _) -> V2;
-        (_, V1)    -> V1 end, M) end,
 
     %% Create test vhost
     http_put(Config, "/vhosts/test", none, {group, '2xx'}),
@@ -1743,41 +1708,49 @@ defs_vhost(Config, Key, URI, CreateMethod, Args) ->
     http_put(Config, "/permissions/test/guest", PermArgs, {group, '2xx'}),
 
     %% Test against default vhost
-    defs_vhost(Config, Key, URI, Rep1, "%2F", "test", CreateMethod,
-               ReplaceVHostInArgs(Args, <<"/">>), ReplaceVHostInArgs(Args, <<"test">>),
+    defs_vhost(Config, Key, URI, Rep1, "%2F", "test", CreateMethod, Args,
                fun(URI2) -> http_delete(Config, URI2, {group, '2xx'}) end),
 
     %% Test against test vhost
-    defs_vhost(Config, Key, URI, Rep1, "test", "%2F", CreateMethod,
-               ReplaceVHostInArgs(Args, <<"test">>), ReplaceVHostInArgs(Args, <<"/">>),
+    defs_vhost(Config, Key, URI, Rep1, "test", "%2F", CreateMethod, Args,
                fun(URI2) -> http_delete(Config, URI2, {group, '2xx'}) end),
 
     %% Remove test vhost
     http_delete(Config, "/vhosts/test", {group, '2xx'}).
 
-
-defs_vhost(Config, Key, URI0, Rep1, VHost1, VHost2, CreateMethod, Args1, Args2,
+defs_vhost(Config, Key, URI0, Rep1, VHost1, VHost2, CreateMethod, Args,
            DeleteFun) ->
     %% Create the item
-    URI2 = create(Config, CreateMethod, Rep1(URI0, VHost1), Args1),
+    URI2 = create(Config, CreateMethod, Rep1(URI0, VHost1), Args),
+
     %% Make sure it ends up in definitions
     Definitions = http_get(Config, "/definitions/" ++ VHost1, ?OK),
-    true = lists:any(fun(I) -> test_item(Args1, I) end, maps:get(Key, Definitions)),
+    true = lists:any(fun(I) -> test_item(Args, I) end, maps:get(Key, Definitions)),
+
+    %% `vhost` is implied when importing/exporting for a single
+    %% virtual host, let's make sure that it doesn't accidentally
+    %% appear in the exported definitions. This can (and did) cause a
+    %% confusion about which part of the request to use as the source
+    %% for the vhost name.
+    case [ I || #{vhost := _} = I <- maps:get(Key, Definitions)] of
+        [] -> ok;
+        WithVHost -> error({vhost_included_in, Key, WithVHost})
+    end,
 
     %% Make sure it is not in the other vhost
     Definitions0 = http_get(Config, "/definitions/" ++ VHost2, ?OK),
-    false = lists:any(fun(I) -> test_item(Args2, I) end, maps:get(Key, Definitions0)),
+    false = lists:any(fun(I) -> test_item(Args, I) end, maps:get(Key, Definitions0)),
 
     %% Post the definitions back
     http_post(Config, "/definitions/" ++ VHost2, Definitions, {group, '2xx'}),
 
     %% Make sure it is now in the other vhost
     Definitions1 = http_get(Config, "/definitions/" ++ VHost2, ?OK),
-    true = lists:any(fun(I) -> test_item(Args2, I) end, maps:get(Key, Definitions1)),
+    true = lists:any(fun(I) -> test_item(Args, I) end, maps:get(Key, Definitions1)),
 
     %% Delete it
     DeleteFun(URI2),
-    URI3 = create(Config, CreateMethod, Rep1(URI0, VHost2), Args2),
+    URI3 = create(Config, CreateMethod, Rep1(URI0, VHost2), Args),
     DeleteFun(URI3),
     passed.
 
@@ -1796,15 +1769,13 @@ definitions_vhost_test(Config) ->
     defs_vhost(Config, bindings, "/bindings/<vhost>/e/amq.direct/e/amq.fanout", post,
                #{routing_key => <<"routing">>, arguments => #{}}),
     defs_vhost(Config, policies, "/policies/<vhost>/my-policy", put,
-               #{vhost      => vhost,
-                 name       => <<"my-policy">>,
+               #{name       => <<"my-policy">>,
                  pattern    => <<".*">>,
                  definition => #{testpos => [1, 2, 3]},
                  priority   => 1}),
 
     defs_vhost(Config, parameters, "/parameters/vhost-limits/<vhost>/limits", put,
-               #{vhost      => vhost,
-                 name       => <<"limits">>,
+               #{name       => <<"limits">>,
                  component  => <<"vhost-limits">>,
                  value      => #{ 'max-connections' => 100 }}),
     Upload =
@@ -1831,7 +1802,7 @@ definitions_password_test(Config) ->
                    tags              => [<<"management">>]},
     http_post(Config, "/definitions", Config35, {group, '2xx'}),
     Definitions35 = http_get(Config, "/definitions", ?OK),
-    ct:pal("Definitions35: ~p", [Definitions35]),
+    ct:pal("Definitions35: ~tp", [Definitions35]),
     Users35 = maps:get(users, Definitions35),
     true = lists:any(fun(I) -> test_item(Expected35, I) end, Users35),
 
@@ -2970,12 +2941,13 @@ extensions_test(Config) ->
     [#{javascript := <<"dispatcher.js">>}] = http_get(Config, "/extensions", ?OK),
     passed.
 
+
 cors_test(Config) ->
     %% With CORS disabled. No header should be received.
     R = req(Config, get, "/overview", [auth_header("guest", "guest")]),
-    io:format("CORS test R: ~p~n", [R]),
+    io:format("CORS test R: ~tp~n", [R]),
     {ok, {_, HdNoCORS, _}} = R,
-    io:format("CORS test HdNoCORS: ~p~n", [HdNoCORS]),
+    io:format("CORS test HdNoCORS: ~tp~n", [HdNoCORS]),
     false = lists:keymember("access-control-allow-origin", 1, HdNoCORS),
     %% The Vary header should include "Origin" regardless of CORS configuration.
     {_, "accept, accept-encoding, origin"} = lists:keyfind("vary", 1, HdNoCORS),
@@ -3022,7 +2994,7 @@ check_cors_all_endpoints(Config) ->
     Endpoints = get_all_http_endpoints(),
 
     [begin
-        ct:pal("Options for ~p~n", [EP]),
+        ct:pal("Options for ~tp~n", [EP]),
         {ok, {{_, 200, _}, _, _}} = req(Config, options, EP, [{"origin", "https://rabbitmq.com"}])
     end
      || EP <- Endpoints].
@@ -3343,30 +3315,38 @@ stats_redirect_test(Config) ->
     passed.
 
 oauth_test(Config) ->
+    ok = rabbit_ct_broker_helpers:enable_plugin(Config, 0, "rabbitmq_auth_backend_oauth2"),
+
     Map1 = http_get(Config, "/auth", ?OK),
     %% Defaults
-    ?assertEqual(false, maps:get(enable_uaa, Map1)),
-    ?assertEqual(<<>>, maps:get(uaa_client_id, Map1)),
-    ?assertEqual(<<>>, maps:get(uaa_location, Map1)),
+    ?assertEqual(false, maps:get(oauth_enabled, Map1)),
+
     %% Misconfiguration
     rabbit_ct_broker_helpers:rpc(Config, 0, application, set_env,
-                                 [rabbitmq_management, enable_uaa, true]),
+                                 [rabbitmq_management, oauth_enabled, true]),
     Map2 = http_get(Config, "/auth", ?OK),
-    ?assertEqual(false, maps:get(enable_uaa, Map2)),
-    ?assertEqual(<<>>, maps:get(uaa_client_id, Map2)),
-    ?assertEqual(<<>>, maps:get(uaa_location, Map2)),
-    %% Valid config
+    ?assertEqual(false, maps:get(oauth_enabled, Map2)),
+    ?assertEqual(<<>>, maps:get(oauth_client_id, Map2)),
+    ?assertEqual(<<>>, maps:get(oauth_provider_url, Map2)),
+    %% Valid config requires non empty OAuthClientId, OAuthClientSecret, OAuthResourceId, OAuthProviderUrl
     rabbit_ct_broker_helpers:rpc(Config, 0, application, set_env,
-                                 [rabbitmq_management, uaa_client_id, "rabbit_user"]),
+                                 [rabbitmq_management, oauth_client_id, "rabbit_user"]),
     rabbit_ct_broker_helpers:rpc(Config, 0, application, set_env,
-                                 [rabbitmq_management, uaa_location, "http://localhost:8080/uaa"]),
+                                 [rabbitmq_management, oauth_client_secret, "rabbit_secret"]),
+    rabbit_ct_broker_helpers:rpc(Config, 0, application, set_env,
+                                 [rabbitmq_management, oauth_provider_url, "http://localhost:8080/uaa"]),
+    rabbit_ct_broker_helpers:rpc(Config, 0, application, set_env,
+                                 [rabbitmq_auth_backend_oauth2, resource_server_id, "rabbitmq"]),
     Map3 = http_get(Config, "/auth", ?OK),
-    ?assertEqual(true, maps:get(enable_uaa, Map3)),
-    ?assertEqual(<<"rabbit_user">>, maps:get(uaa_client_id, Map3)),
-    ?assertEqual(<<"http://localhost:8080/uaa">>, maps:get(uaa_location, Map3)),
+    println(Map3),
+    ?assertEqual(true, maps:get(oauth_enabled, Map3)),
+    ?assertEqual(<<"rabbit_user">>, maps:get(oauth_client_id, Map3)),
+    ?assertEqual(<<"rabbit_secret">>, maps:get(oauth_client_secret, Map3)),
+    ?assertEqual(<<"rabbitmq">>, maps:get(resource_server_id, Map3)),
+    ?assertEqual(<<"http://localhost:8080/uaa">>, maps:get(oauth_provider_url, Map3)),
     %% cleanup
     rabbit_ct_broker_helpers:rpc(Config, 0, application, unset_env,
-                                 [rabbitmq_management, enable_uaa]).
+                                 [rabbitmq_management, oauth_enabled]).
 
 login_test(Config) ->
     http_put(Config, "/users/myuser", [{password, <<"myuser">>},
@@ -3486,6 +3466,23 @@ auth_attempts_test(Config) ->
     ?assertEqual(0, maps:get(auth_attempts_failed, Amqp091_3)),
 
     passed.
+
+
+config_environment_test(Config) ->
+    rabbit_ct_broker_helpers:rpc(Config, 0, application, set_env,
+                                 [rabbitmq_management,
+                                  config_environment_test_env,
+                                  config_environment_test_value]),
+    ResultString = http_get_no_decode(Config, "/config/effective",
+                                      "guest", "guest", ?OK),
+    CleanString = re:replace(ResultString, "\\s+", "", [global,{return,list}]),
+    {ok, Tokens, _} = erl_scan:string(CleanString++"."),
+    {ok, AbsForm} = erl_parse:parse_exprs(Tokens),
+    {value, EnvList, _} = erl_eval:exprs(AbsForm, erl_eval:new_bindings()),
+    V = proplists:get_value(config_environment_test_env,
+                            proplists:get_value(rabbitmq_management, EnvList)),
+    ?assertEqual(config_environment_test_value, V).
+
 
 %% -------------------------------------------------------------------
 %% Helpers.

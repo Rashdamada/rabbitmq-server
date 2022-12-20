@@ -104,7 +104,7 @@ group_by_queue_and_reason(Tables) ->
                            ensure_xdeath_event_count(Augmented, N),
                            Key, SeenKeys, Acc),
                   {sets:add_element(Key, SeenKeys), Acc1}
-          end, {sets:new(), []}, Tables),
+          end, {sets:new([{version, 2}]), []}, Tables),
     Grouped.
 
 update_x_death_header(Info, undefined) ->
@@ -143,8 +143,8 @@ update_x_death_header(Info, Headers) ->
               Headers, <<"x-death">>, array,
               [{table, rabbit_misc:sort_field_table(Info1)} | Others]);
         {<<"x-death">>, InvalidType, Header} ->
-            rabbit_log:warning("Message has invalid x-death header (type: ~p)."
-                               " Resetting header ~p",
+            rabbit_log:warning("Message has invalid x-death header (type: ~tp)."
+                               " Resetting header ~tp",
                                [InvalidType, Header]),
             %% if x-death is something other than an array (list)
             %% then we reset it: this happens when some clients consume
@@ -251,7 +251,7 @@ log_cycle_once(Queues) ->
         true      -> ok;
         undefined -> rabbit_log:warning(
                        "Message dropped. Dead-letter queues cycle detected" ++
-                           ": ~p~nThis cycle will NOT be reported again.",
+                           ": ~tp~nThis cycle will NOT be reported again.",
                        [Queues]),
                      put(Key, true)
     end.

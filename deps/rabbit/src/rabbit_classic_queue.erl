@@ -7,11 +7,12 @@
 -record(msg_status, {pending :: [pid()],
                      confirmed = [] :: [pid()]}).
 
--record(?MODULE, {pid :: undefined | pid(), %% the current master pid
-                  qref :: term(), %% TODO
-                  unconfirmed = #{} ::
-                  #{non_neg_integer() => #msg_status{}}}).
 -define(STATE, ?MODULE).
+-record(?STATE, {pid :: undefined | pid(), %% the current master pid
+                 qref :: term(), %% TODO
+                 unconfirmed = #{} ::
+                 #{non_neg_integer() => #msg_status{}}}).
+
 
 -opaque state() :: #?STATE{}.
 
@@ -19,6 +20,7 @@
 
 -export([
          is_enabled/0,
+         is_compatible/3,
          declare/2,
          delete/4,
          is_recoverable/1,
@@ -48,9 +50,15 @@
 
 -export([confirm_to_sender/3,
          send_rejection/3,
-         send_queue_event/3]).
+         deliver_to_consumer/5,
+         send_drained/3,
+         send_credit_reply/3]).
 
 is_enabled() -> true.
+
+-spec is_compatible(boolean(), boolean(), boolean()) -> boolean().
+is_compatible(_, _, _) ->
+    true.
 
 declare(Q, Node) when ?amqqueue_is_classic(Q) ->
     QName = amqqueue:get_name(Q),
@@ -73,7 +81,7 @@ declare(Q, Node) when ?amqqueue_is_classic(Q) ->
               rabbit_amqqueue_sup_sup:start_queue_process(Node1, Q, declare),
               {init, new}, infinity);
         {error, Error} ->
-            {protocol_error, internal_error, "Cannot declare a queue '~s' on node '~s': ~255p",
+            {protocol_error, internal_error, "Cannot declare a queue '~ts' on node '~ts': ~255p",
              [rabbit_misc:rs(QName), Node1, Error]}
     end.
 
@@ -88,14 +96,14 @@ delete(Q, IfUnused, IfEmpty, ActingUser) when ?amqqueue_is_classic(Q) ->
             #resource{name = Name, virtual_host = Vhost} = amqqueue:get_name(Q1),
             case IfEmpty of
                 true ->
-                    rabbit_log:error("Queue ~s in vhost ~s has its master node down and "
+                    rabbit_log:error("Queue ~ts in vhost ~ts has its master node down and "
                                      "no mirrors available or eligible for promotion. "
                                      "The queue may be non-empty. "
                                      "Refusing to force-delete.",
                                      [Name, Vhost]),
                     {error, not_empty};
                 false ->
-                    rabbit_log:warning("Queue ~s in vhost ~s has its master node is down and "
+                    rabbit_log:warning("Queue ~ts in vhost ~ts has its master node is down and "
                                        "no mirrors available or eligible for promotion. "
                                        "Forcing queue deletion.",
                                        [Name, Vhost]),
@@ -133,7 +141,7 @@ recover(VHost, Queues) ->
                                  not lists:member(amqqueue:get_name(Q), RecoveredNames)],
             {RecoveredQs, FailedQueues};
         {error, Reason} ->
-            rabbit_log:error("Failed to start queue supervisor for vhost '~s': ~s", [VHost, Reason]),
+            rabbit_log:error("Failed to start queue supervisor for vhost '~ts': ~ts", [VHost, Reason]),
             throw({error, Reason})
     end.
 
@@ -237,6 +245,8 @@ handle_event({confirm, MsgSeqNos, Pid}, #?STATE{qref = QRef,
     %% been received (or DOWN has been received).
     %% Hence this part of the confirm logic is queue specific.
     {ok, State#?STATE{unconfirmed = Unconfirmed}, Actions};
+handle_event({deliver, _, _, _} = Delivery, #?STATE{} = State) ->
+    {ok, State, [Delivery]};
 handle_event({reject_publish, SeqNo, _QPid},
               #?STATE{qref = QRef,
                       unconfirmed = U0} = State) ->
@@ -287,6 +297,8 @@ handle_event({down, Pid, Info}, #?STATE{qref = QRef,
             {ok, State0#?STATE{unconfirmed = U},
              [{rejected, QRef, MsgIds} | Actions0]}
     end;
+handle_event({send_drained, _} = Action, State) ->
+    {ok, State, [Action]};
 handle_event({send_credit_reply, _} = Action, State) ->
     {ok, State, [Action]}.
 
@@ -300,17 +312,21 @@ settlement_action(Type, QRef, MsgSeqs, Acc) ->
     {[{amqqueue:amqqueue(), state()}], rabbit_queue_type:actions()}.
 deliver(Qs0, #delivery{flow = Flow,
                        msg_seq_no = MsgNo,
-                       message = #basic_message{exchange_name = _Ex},
-                       confirm = Confirm} = Delivery) ->
-    %% TODO: record master and slaves for confirm processing
+                       message = #basic_message{} = Msg0,
+                       confirm = Confirm} = Delivery0) ->
+    %% add guid to content here instead of in rabbit_basic:message/3,
+    %% as classic queues are the only ones that need it
+    Msg = Msg0#basic_message{id = rabbit_guid:gen()},
+    Delivery = Delivery0#delivery{message = Msg},
+
     {MPids, SPids, Qs, Actions} = qpids(Qs0, Confirm, MsgNo),
-    QPids = MPids ++ SPids,
     case Flow of
         %% Here we are tracking messages sent by the rabbit_channel
         %% process. We are accessing the rabbit_channel process
         %% dictionary.
-        flow   -> [credit_flow:send(QPid) || QPid <- QPids],
-                  [credit_flow:send(QPid) || QPid <- SPids];
+        flow ->
+            [credit_flow:send(QPid) || QPid <- MPids],
+            [credit_flow:send(QPid) || QPid <- SPids];
         noflow -> ok
     end,
     MMsg = {deliver, Delivery, false},
@@ -439,7 +455,7 @@ recover_durable_queues(QueuesAndRecoveryTerms) ->
         gen_server2:mcall(
           [{rabbit_amqqueue_sup_sup:start_queue_process(node(), Q, recovery),
             {init, {self(), Terms}}} || {Q, Terms} <- QueuesAndRecoveryTerms]),
-    [rabbit_log:error("Queue ~p failed to initialise: ~p",
+    [rabbit_log:error("Queue ~tp failed to initialise: ~tp",
                       [Pid, Error]) || {Pid, Error} <- Failures],
     [Q || {_, {new, Q}} <- Results].
 
@@ -509,22 +525,55 @@ update_msg_status(down, Pid, #msg_status{pending = P} = S) ->
 confirm_to_sender(Pid, QName, MsgSeqNos) ->
     %% the stream queue included the queue type refactoring and thus requires
     %% a different message format
-    Evt = case rabbit_ff_registry:is_enabled(stream_queue) of
-              true ->
-                  {queue_event, QName, {confirm, MsgSeqNos, self()}};
-              false ->
-                  {confirm, MsgSeqNos, self()}
-          end,
-    gen_server2:cast(Pid, Evt).
+    case rabbit_queue_type:is_supported() of
+        true ->
+            gen_server:cast(Pid,
+                            {queue_event, QName,
+                             {confirm, MsgSeqNos, self()}});
+        false ->
+            gen_server2:cast(Pid, {confirm, MsgSeqNos, self()})
+    end.
 
 send_rejection(Pid, QName, MsgSeqNo) ->
-    case rabbit_ff_registry:is_enabled(stream_queue) of
+    case rabbit_queue_type:is_supported() of
         true ->
-            gen_server2:cast(Pid, {queue_event, QName,
-                                   {reject_publish, MsgSeqNo, self()}});
+            gen_server:cast(Pid, {queue_event, QName,
+                                  {reject_publish, MsgSeqNo, self()}});
         false ->
             gen_server2:cast(Pid, {reject_publish, MsgSeqNo, self()})
     end.
 
-send_queue_event(Pid, QName, Evt) ->
-    gen_server2:cast(Pid, {queue_event, QName, Evt}).
+deliver_to_consumer(Pid, QName, CTag, AckRequired, Message) ->
+    case  has_classic_queue_type_delivery_support() of
+        true ->
+            Deliver = {deliver, CTag, AckRequired, [Message]},
+            Evt = {queue_event, QName, Deliver},
+            gen_server:cast(Pid, Evt);
+        false ->
+            Deliver = {deliver, CTag, AckRequired, Message},
+            gen_server2:cast(Pid, Deliver)
+    end.
+
+send_drained(Pid, QName, CTagCredits) ->
+    case has_classic_queue_type_delivery_support() of
+        true ->
+            gen_server:cast(Pid, {queue_event, QName,
+                                  {send_drained, CTagCredits}});
+        false ->
+            gen_server2:cast(Pid, {send_drained, CTagCredits})
+    end.
+
+send_credit_reply(Pid, QName, Len) when is_integer(Len) ->
+    case rabbit_queue_type:is_supported() of
+        true ->
+            gen_server:cast(Pid, {queue_event, QName,
+                                  {send_credit_reply, Len}});
+        false ->
+            gen_server2:cast(Pid, {send_credit_reply, Len})
+    end.
+
+has_classic_queue_type_delivery_support() ->
+    %% some queue_events were missed in the initial queue_type implementation
+    %% this feature flag enables those and completes the initial queue type
+    %% API for classic queues
+    rabbit_feature_flags:is_enabled(classic_queue_type_delivery_support).

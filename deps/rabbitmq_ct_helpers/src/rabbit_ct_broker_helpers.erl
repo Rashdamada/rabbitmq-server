@@ -556,7 +556,7 @@ init_nodename(Config, NodeConfig, I) ->
     Nodename0 = case rabbit_ct_helpers:get_config(Config, rmq_nodes_count) of
         NodesList when is_list(NodesList) ->
             Name = lists:nth(I + 1, NodesList),
-            rabbit_misc:format("~s@~s", [Name, Hostname]);
+            rabbit_misc:format("~ts@~ts", [Name, Hostname]);
         _ ->
             Base = ?config(tcp_ports_base, NodeConfig),
             Suffix0 = rabbit_ct_helpers:get_config(Config,
@@ -566,7 +566,7 @@ init_nodename(Config, NodeConfig, I) ->
                 _ when is_atom(Suffix0) -> [$- | atom_to_list(Suffix0)];
                 _                       -> [$- | Suffix0]
             end,
-            rabbit_misc:format("rmq-ct~s-~b-~b@~s",
+            rabbit_misc:format("rmq-ct~ts-~b-~b@~ts",
               [Suffix, I + 1, Base, Hostname])
     end,
     Nodename = list_to_atom(Nodename0),
@@ -594,7 +594,7 @@ write_config_file(Config, NodeConfig, _I) ->
     Ret1 = file:make_dir(ConfigDir),
     Ret2 = file:write_file(ConfigFile ++ ".config",
       rabbit_ct_helpers:convert_to_unicode_binary(
-        io_lib:format("% vim:ft=erlang:~n~n~p.~n", [ErlangConfig]))),
+        io_lib:format("% vim:ft=erlang:~n~n~tp.~n", [ErlangConfig]))),
     case {Ret1, Ret2} of
         {ok, ok} ->
             NodeConfig;
@@ -670,7 +670,7 @@ do_start_rabbitmq_node(Config, NodeConfig, I) ->
                      undefined ->
                          ExtraArgs0;
                      ExtraPluginsDir ->
-                         [{"EXTRA_PLUGINS_DIR=~s", [ExtraPluginsDir]}
+                         [{"EXTRA_PLUGINS_DIR=~ts", [ExtraPluginsDir]}
                           | ExtraArgs0]
                  end,
     StartWithPluginsDisabled = rabbit_ct_helpers:get_config(
@@ -712,27 +712,27 @@ do_start_rabbitmq_node(Config, NodeConfig, I) ->
                                             true  -> SecNewScriptsDir;
                                             false -> SecOldScriptsDir
                                         end,
-                        [{"DEPS_DIR=~s", [SecDepsDir]},
-                         {"REBAR_DEPS_DIR=~s", [SecDepsDir]},
-                         {"ERL_LIBS=~s", [SecErlLibs]},
-                         {"RABBITMQ_SCRIPTS_DIR=~s", [SecScriptsDir]},
-                         {"RABBITMQ_SERVER=~s/rabbitmq-server", [SecScriptsDir]},
-                         {"RABBITMQCTL=~s/rabbitmqctl", [SecScriptsDir]},
-                         {"RABBITMQ_PLUGINS=~s/rabbitmq-plugins", [SecScriptsDir]}
+                        [{"DEPS_DIR=~ts", [SecDepsDir]},
+                         {"REBAR_DEPS_DIR=~ts", [SecDepsDir]},
+                         {"ERL_LIBS=~ts", [SecErlLibs]},
+                         {"RABBITMQ_SCRIPTS_DIR=~ts", [SecScriptsDir]},
+                         {"RABBITMQ_SERVER=~ts/rabbitmq-server", [SecScriptsDir]},
+                         {"RABBITMQCTL=~ts/rabbitmqctl", [SecScriptsDir]},
+                         {"RABBITMQ_PLUGINS=~ts/rabbitmq-plugins", [SecScriptsDir]}
                          | ExtraArgs4];
                     false ->
                         ExtraArgs4
                 end,
     MakeVars = [
-      {"RABBITMQ_NODENAME=~s", [Nodename]},
-      {"RABBITMQ_NODENAME_FOR_PATHS=~s", [InitialNodename]},
+      {"RABBITMQ_NODENAME=~ts", [Nodename]},
+      {"RABBITMQ_NODENAME_FOR_PATHS=~ts", [InitialNodename]},
       {"RABBITMQ_DIST_PORT=~b", [DistPort]},
-      {"RABBITMQ_CONFIG_FILE=~s", [ConfigFile]},
-      {"RABBITMQ_SERVER_START_ARGS=~s", [StartArgs1]},
+      {"RABBITMQ_CONFIG_FILE=~ts", [ConfigFile]},
+      {"RABBITMQ_SERVER_START_ARGS=~ts", [StartArgs1]},
       "RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS=+S 2 +sbwt very_short +A 24",
       "RABBITMQ_LOG=debug",
       "RMQCTL_WAIT_TIMEOUT=180",
-      {"TEST_TMPDIR=~s", [PrivDir]}
+      {"TEST_TMPDIR=~ts", [PrivDir]}
       | ExtraArgs],
     Cmd = ["start-background-broker" | MakeVars],
     case rabbit_ct_helpers:get_config(Config, rabbitmq_run_cmd) of
@@ -756,7 +756,7 @@ do_start_rabbitmq_node(Config, NodeConfig, I) ->
                 {_, false} ->
                     ["RABBITMQ_ENABLED_PLUGINS=rabbit"];
                 {true, _} ->
-                    [{"RABBITMQ_ENABLED_PLUGINS=~s", [filename:basename(SrcDir)]}];
+                    [{"RABBITMQ_ENABLED_PLUGINS=~ts", [filename:basename(SrcDir)]}];
                 _ ->
                     []
             end,
@@ -780,13 +780,13 @@ do_start_rabbitmq_node(Config, NodeConfig, I) ->
 query_node(Config, NodeConfig) ->
     Nodename = ?config(nodename, NodeConfig),
     PidFile = rpc(Config, Nodename, os, getenv, ["RABBITMQ_PID_FILE"]),
-    MnesiaDir = rpc(Config, Nodename, mnesia, system_info, [directory]),
+    DataDir = rpc(Config, Nodename, mnesia, system_info, [directory]),
     {ok, PluginsDir} = rpc(Config, Nodename, application, get_env,
       [rabbit, plugins_dir]),
     {ok, EnabledPluginsFile} = rpc(Config, Nodename, application, get_env,
       [rabbit, enabled_plugins_file]),
     Vars0 = [{pid_file, PidFile},
-             {mnesia_dir, MnesiaDir},
+             {data_dir, DataDir},
              {plugins_dir, PluginsDir},
              {enabled_plugins_file, EnabledPluginsFile}],
     Vars = try
@@ -805,6 +805,7 @@ query_node(Config, NodeConfig) ->
                    ct:pal("NO RABBITMQ_FEATURE_FLAGS_FILE"),
                    Vars0
            end,
+    cover_add_node(Nodename),
     rabbit_ct_helpers:set_config(NodeConfig, Vars).
 
 maybe_cluster_nodes(Config) ->
@@ -867,7 +868,7 @@ handle_nodes_in_parallel(NodeConfigs, Fun) ->
                          T2 = erlang:timestamp(),
                          ct:pal(
                            ?LOW_IMPORTANCE,
-                           "Time to run ~p for node ~s: ~b µs",
+                           "Time to run ~tp for node ~ts: ~b us",
                           [Fun,
                            ?config(nodename, NodeConfig),
                            timer:now_diff(T2, T1)]),
@@ -884,7 +885,7 @@ wait_for_node_handling([], Fun, T0, Results) ->
     T3 = erlang:timestamp(),
     ct:pal(
       ?LOW_IMPORTANCE,
-      "Time to run ~p for all nodes: ~b µs",
+      "Time to run ~tp for all nodes: ~b us",
       [Fun, timer:now_diff(T3, T0)]),
     Results;
 wait_for_node_handling(Procs, Fun, T0, Results) ->
@@ -931,7 +932,7 @@ rewrite_node_config_file(Config, Node) ->
         ok ->
             ok;
         {error, Reason} ->
-            ct:pal("Failed to rotate config file ~s: ~s",
+            ct:pal("Failed to rotate config file ~ts: ~ts",
               [ConfigFile, file:format_error(Reason)])
     end,
     %% Now we can write the new file. The caller is responsible for
@@ -945,7 +946,7 @@ rotate_config_file(ConfigFile) ->
     rotate_config_file(ConfigFile, ConfigFile ++ ".config", 1).
 
 rotate_config_file(ConfigFile, OldName, Ext) ->
-    NewName = rabbit_misc:format("~s.config.~b", [ConfigFile, Ext]),
+    NewName = rabbit_misc:format("~ts.config.~b", [ConfigFile, Ext]),
     case filelib:is_file(NewName) of
         true  ->
             case rotate_config_file(ConfigFile, NewName, Ext + 1) of
@@ -1002,13 +1003,14 @@ stop_rabbitmq_nodes(Config) ->
     proplists:delete(rmq_nodes, Config).
 
 stop_rabbitmq_node(Config, NodeConfig) ->
+    Nodename = ?config(nodename, NodeConfig),
+    cover_remove_node(Nodename),
     SrcDir = ?config(effective_srcdir, NodeConfig),
     InitialMakeVars = ?config(make_vars_for_node_startup, NodeConfig),
-    Nodename = ?config(nodename, NodeConfig),
     InitialNodename = ?config(initial_nodename, NodeConfig),
     MakeVars = InitialMakeVars ++ [
-      {"RABBITMQ_NODENAME=~s", [Nodename]},
-      {"RABBITMQ_NODENAME_FOR_PATHS=~s", [InitialNodename]}
+      {"RABBITMQ_NODENAME=~ts", [Nodename]},
+      {"RABBITMQ_NODENAME_FOR_PATHS=~ts", [InitialNodename]}
     ],
     Cmd = ["stop-node" | MakeVars],
     case rabbit_ct_helpers:get_config(Config, rabbitmq_run_cmd) of
@@ -1030,7 +1032,7 @@ configure_dist_proxy(Config) ->
 block_traffic_between(NodeA, NodeB) ->
     ct:pal(
       ?LOW_IMPORTANCE,
-      "Blocking traffic between ~s and ~s",
+      "Blocking traffic between ~ts and ~ts",
       [NodeA, NodeB]),
     ?assertEqual(ok, rpc:call(NodeA, inet_tcp_proxy_dist, block, [NodeB])),
     ?assertEqual(ok, rpc:call(NodeB, inet_tcp_proxy_dist, block, [NodeA])).
@@ -1038,7 +1040,7 @@ block_traffic_between(NodeA, NodeB) ->
 allow_traffic_between(NodeA, NodeB) ->
     ct:pal(
       ?LOW_IMPORTANCE,
-      "Unblocking traffic between ~s and ~s",
+      "Unblocking traffic between ~ts and ~ts",
       [NodeA, NodeB]),
     ?assertEqual(ok, rpc:call(NodeA, inet_tcp_proxy_dist, allow, [NodeB])),
     ?assertEqual(ok, rpc:call(NodeB, inet_tcp_proxy_dist, allow, [NodeA])).
@@ -1076,7 +1078,7 @@ rabbitmqctl(Config, Node, Args, Timeout) ->
     Env0 = [
       {"RABBITMQ_SCRIPTS_DIR", filename:dirname(Rabbitmqctl)},
       {"RABBITMQ_PID_FILE", ?config(pid_file, NodeConfig)},
-      {"RABBITMQ_MNESIA_DIR", ?config(mnesia_dir, NodeConfig)},
+      {"RABBITMQ_MNESIA_DIR", ?config(data_dir, NodeConfig)},
       {"RABBITMQ_PLUGINS_DIR", ?config(plugins_dir, NodeConfig)},
       {"RABBITMQ_ENABLED_PLUGINS_FILE",
         ?config(enabled_plugins_file, NodeConfig)}
@@ -1107,7 +1109,7 @@ rabbitmq_queues(Config, Node, Args) ->
     Env0 = [
       {"RABBITMQ_SCRIPTS_DIR", filename:dirname(RabbitmqQueues)},
       {"RABBITMQ_PID_FILE", ?config(pid_file, NodeConfig)},
-      {"RABBITMQ_MNESIA_DIR", ?config(mnesia_dir, NodeConfig)},
+      {"RABBITMQ_MNESIA_DIR", ?config(data_dir, NodeConfig)},
       {"RABBITMQ_PLUGINS_DIR", ?config(plugins_dir, NodeConfig)},
       {"RABBITMQ_ENABLED_PLUGINS_FILE",
         ?config(enabled_plugins_file, NodeConfig)}
@@ -1224,12 +1226,12 @@ node_uri(Config, Node, Options) ->
         true ->
             User = proplists:get_value(user, Options, "guest"),
             Password = proplists:get_value(password, Options, "guest"),
-            io_lib:format("~s:~s@", [User, Password]);
+            io_lib:format("~ts:~ts@", [User, Password]);
         false ->
             ""
     end,
     list_to_binary(
-      rabbit_misc:format("~s://~s~s:~b",
+      rabbit_misc:format("~ts://~ts~ts:~b",
         [Scheme, UserPass, Hostname, TcpPort])).
 
 format_ipaddr_for_uri(
@@ -1521,7 +1523,7 @@ add_code_path_to_node(Node, Module) ->
                       end, Paths);
                 Error ->
                     ct:pal(?LOW_IMPORTANCE,
-                           "Failed to retrieve current code path from node ~s: ~p~n",
+                           "Failed to retrieve current code path from node ~ts: ~tp~n",
                            [Node, Error]),
                     ok
             end
@@ -1626,20 +1628,20 @@ stop_node_after(Config, Node, Sleep) ->
 
 kill_node(Config, Node) ->
     Pid = rpc(Config, Node, os, getpid, []),
-    %% FIXME maybe_flush_cover(Cfg),
+    cover_remove_node(Config, Node),
     Cmd = case os:type() of
               {win32, _} ->
                   case os:find_executable("taskkill.exe") of
                       false ->
                           rabbit_misc:format(
                             "PowerShell -Command "
-                            "\"Stop-Process -Id ~s -Force\"",
+                            "\"Stop-Process -Id ~ts -Force\"",
                             [Pid]);
                       _ ->
-                          rabbit_misc:format("taskkill /PID ~s /F", [Pid])
+                          rabbit_misc:format("taskkill /PID ~ts /F", [Pid])
                   end;
               _ ->
-                  rabbit_misc:format("kill -9 ~s", [Pid])
+                  rabbit_misc:format("kill -9 ~ts", [Pid])
           end,
     os:cmd(Cmd),
     await_os_pid_death(Pid).
@@ -1696,7 +1698,7 @@ enable_feature_flag(Config, [Node1 | _] = Nodes, FeatureName) ->
         false ->
             {skip,
              lists:flatten(
-               io_lib:format("'~s' feature flag is unsupported",
+               io_lib:format("'~ts' feature flag is unsupported",
                              [FeatureName]))}
     end.
 
@@ -1807,9 +1809,9 @@ set_ha_policy_all(Config, Extra) ->
     Config.
 
 set_ha_policy_two_pos(Config) ->
-    Members = [
-      rabbit_misc:atom_to_binary(N)
-      || N <- get_node_configs(Config, nodename)],
+    Members =
+    [atom_to_binary(N)
+     || N <- get_node_configs(Config, nodename)],
     TwoNodes = [M || M <- lists:sublist(Members, 2)],
     set_ha_policy(Config, 0, <<"^ha.two.">>, {<<"nodes">>, TwoNodes},
                   [{<<"ha-promote-on-shutdown">>, <<"always">>}]),
@@ -1819,9 +1821,9 @@ set_ha_policy_two_pos(Config) ->
     Config.
 
 set_ha_policy_two_pos_batch_sync(Config) ->
-    Members = [
-      rabbit_misc:atom_to_binary(N)
-      || N <- get_node_configs(Config, nodename)],
+    Members =
+    [atom_to_binary(N)
+     || N <- get_node_configs(Config, nodename)],
     TwoNodes = [M || M <- lists:sublist(Members, 2)],
     set_ha_policy(Config, 0, <<"^ha.two.">>, {<<"nodes">>, TwoNodes},
                   [{<<"ha-promote-on-shutdown">>, <<"always">>}]),
@@ -1884,7 +1886,7 @@ plugin_action(Config, Node, Args) ->
     Env = [
       {"RABBITMQ_SCRIPTS_DIR", filename:dirname(Rabbitmqplugins)},
       {"RABBITMQ_PID_FILE", ?config(pid_file, NodeConfig)},
-      {"RABBITMQ_MNESIA_DIR", ?config(mnesia_dir, NodeConfig)},
+      {"RABBITMQ_MNESIA_DIR", ?config(data_dir, NodeConfig)},
       {"RABBITMQ_PLUGINS_DIR", ?config(plugins_dir, NodeConfig)},
       {"RABBITMQ_ENABLED_PLUGINS_FILE",
         ?config(enabled_plugins_file, NodeConfig)}
@@ -1917,3 +1919,30 @@ user(Username) ->
     #user{username       = Username,
           tags           = [administrator],
           authz_backends = [{rabbit_auth_backend_internal, none}]}.
+
+cover_add_node(Node)
+  when is_atom(Node) andalso Node =/= undefined ->
+    if_cover(
+      fun() ->
+              {ok, [Node]} = ct_cover:add_nodes([Node])
+      end).
+
+cover_remove_node(Node)
+  when is_atom(Node) andalso Node =/= undefined ->
+    if_cover(
+      fun() ->
+              ok = ct_cover:remove_nodes([Node])
+      end).
+
+cover_remove_node(Config, Node) ->
+    NodeConfig = get_node_config(Config, Node),
+    Nodename = ?config(nodename, NodeConfig),
+    cover_remove_node(Nodename).
+
+if_cover(F) ->
+    case os:getenv("COVER") of
+        false ->
+            ok;
+        _ ->
+            F()
+    end.

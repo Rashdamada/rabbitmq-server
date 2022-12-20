@@ -35,7 +35,7 @@
          handle_pre_hibernate/1, resume/1, msg_rates/1,
          info/2, invoke/3, is_duplicate/2, set_queue_mode/2,
          set_queue_version/2,
-         zip_msgs_and_acks/4, handle_info/2]).
+         zip_msgs_and_acks/4]).
 
 -record(state, {bq, bqss, max_priority}).
 -record(passthrough, {bq, bqs}).
@@ -68,7 +68,7 @@ enable() ->
     {ok, RealBQ} = application:get_env(rabbit, backing_queue_module),
     case RealBQ of
         ?MODULE -> ok;
-        _       -> rabbit_log:info("Priority queues enabled, real BQ is ~s",
+        _       -> rabbit_log:info("Priority queues enabled, real BQ is ~ts",
                                    [RealBQ]),
                    application:set_env(
                      rabbitmq_priority_queue, backing_queue_module, RealBQ),
@@ -394,11 +394,6 @@ handle_pre_hibernate(State = #state{bq = BQ}) ->
           end, State);
 handle_pre_hibernate(State = #passthrough{bq = BQ, bqs = BQS}) ->
     ?passthrough1(handle_pre_hibernate(BQS)).
-
-handle_info(Msg, State = #state{bq = BQ}) ->
-    foreach1(fun (_P, BQSN) -> BQ:handle_info(Msg, BQSN) end, State);
-handle_info(Msg, State = #passthrough{bq = BQ, bqs = BQS}) ->
-    ?passthrough1(handle_info(Msg, BQS)).
 
 resume(State = #state{bq = BQ}) ->
     foreach1(fun (_P, BQSN) -> BQ:resume(BQSN) end, State);

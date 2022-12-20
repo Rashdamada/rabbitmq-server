@@ -30,6 +30,7 @@
          close_dest/1,
          ack/3,
          nack/3,
+         status/1,
          forward/4
         ]).
 
@@ -119,6 +120,7 @@ init_dest(Conf = #{ack_mode := AckMode,
         _ ->
             ok
     end,
+    amqp_connection:register_blocked_handler(Conn, self()),
     Conf#{dest => Dst#{unacked => #{}}}.
 
 ack(Tag, Multi, State = #{source := #{current := {_, Chan, _}}}) ->
@@ -153,10 +155,41 @@ dest_endpoint(#{dest := Dest}) ->
     Keys = [dest_exchange, dest_exchange_key, dest_queue],
     maps:to_list(maps:filter(fun(K, _) -> proplists:is_defined(K, Keys) end, Dest)).
 
-forward(IncomingTag, Props, Payload,
-        State0 = #{dest := #{props_fun := PropsFun,
-                             current := {_, _, DstUri},
-                             fields_fun := FieldsFun}}) ->
+forward_pending(State) ->
+    case pop_pending(State) of
+        empty ->
+            State;
+        {{Tag, Props, Payload}, S} ->
+            S2 = do_forward(Tag, Props, Payload, S),
+            S3 = control_throttle(S2),
+            case is_blocked(S3) of
+                true ->
+                    %% We are blocked by client-side flow-control and/or
+                    %% `connection.blocked` message from the destination
+                    %% broker. Stop forwarding pending messages.
+                    S3;
+                false ->
+                    forward_pending(S3)
+            end
+    end.
+
+forward(IncomingTag, Props, Payload, State) ->
+    case is_blocked(State) of
+        true ->
+            %% We are blocked by client-side flow-control and/or
+            %% `connection.blocked` message from the destination
+            %% broker. Simply cache the forward.
+            PendingEntry = {IncomingTag, Props, Payload},
+            add_pending(PendingEntry, State);
+        false ->
+            State1 = do_forward(IncomingTag, Props, Payload, State),
+            control_throttle(State1)
+    end.
+
+do_forward(IncomingTag, Props, Payload,
+           State0 = #{dest := #{props_fun := PropsFun,
+                                current := {_, _, DstUri},
+                                fields_fun := FieldsFun}}) ->
     SrcUri = rabbit_shovel_behaviour:source_uri(State0),
     % do publish
     Exchange = maps:get(exchange, Props, undefined),
@@ -230,6 +263,9 @@ handle_source({'EXIT', Conn, Reason},
               #{source := #{current := {Conn, _, _}}}) ->
     {stop, {inbound_conn_died, Reason}};
 
+handle_source({'EXIT', _Pid, {shutdown, {server_initiated_close, ?PRECONDITION_FAILED, Reason}}}, _State) ->
+    {stop, {inbound_link_or_channel_closure, Reason}};
+
 handle_source(_Msg, _State) ->
     not_handled.
 
@@ -246,11 +282,28 @@ handle_dest(#'basic.nack'{delivery_tag = Seq, multiple = Multiple},
                        end, Seq, Multiple, State);
 
 handle_dest(#'basic.cancel'{}, #{name := Name}) ->
-    rabbit_log:warning("Shovel ~p received a 'basic.cancel' from the server", [Name]),
+    rabbit_log:warning("Shovel ~tp received a 'basic.cancel' from the server", [Name]),
     {stop, {shutdown, restart}};
 
 handle_dest({'EXIT', Conn, Reason}, #{dest := #{current := {Conn, _, _}}}) ->
     {stop, {outbound_conn_died, Reason}};
+
+handle_dest({'EXIT', _Pid, {shutdown, {server_initiated_close, ?PRECONDITION_FAILED, Reason}}}, _State) ->
+    {stop, {outbound_link_or_channel_closure, Reason}};
+
+handle_dest(#'connection.blocked'{}, State) ->
+    update_blocked_by(connection_blocked, true, State);
+
+handle_dest(#'connection.unblocked'{}, State) ->
+    State1 = update_blocked_by(connection_blocked, false, State),
+    %% we are unblocked so can begin to forward
+    forward_pending(State1);
+
+handle_dest({bump_credit, Msg}, State) ->
+    credit_flow:handle_bump_msg(Msg),
+    State1 = control_throttle(State),
+    %% we have credit so can begin to forward
+    forward_pending(State1);
 
 handle_dest(_Msg, _State) ->
     not_handled.
@@ -295,7 +348,13 @@ publish(IncomingTag, Method, Msg,
                   amqp_channel:next_publish_seqno(OutboundChan);
               _  -> undefined
           end,
-    ok = amqp_channel:call(OutboundChan, Method, Msg),
+    case AckMode of
+        on_publish ->
+            ok = amqp_channel:cast_flow(OutboundChan, Method, Msg);
+        _  ->
+            ok = amqp_channel:call(OutboundChan, Method, Msg)
+    end,
+
     rabbit_shovel_behaviour:decr_remaining_unacked(
       case AckMode of
           no_ack ->
@@ -307,14 +366,51 @@ publish(IncomingTag, Method, Msg,
               rabbit_shovel_behaviour:decr_remaining(1, State1)
       end).
 
+control_throttle(State) ->
+    update_blocked_by(flow, credit_flow:blocked(), State).
+
+update_blocked_by(Tag, IsBlocked, State = #{dest := Dest}) ->
+    BlockReasons = maps:get(blocked_by, Dest, []),
+    NewBlockReasons =
+        case IsBlocked of
+            true -> ordsets:add_element(Tag, BlockReasons);
+            false -> ordsets:del_element(Tag, BlockReasons)
+        end,
+    State#{dest => Dest#{blocked_by => NewBlockReasons}}.
+
+is_blocked(#{dest := #{blocked_by := BlockReasons}}) when BlockReasons =/= [] ->
+    true;
+is_blocked(_) ->
+    false.
+
+status(#{dest := #{blocked_by := [flow]}}) ->
+    flow;
+status(#{dest := #{blocked_by := BlockReasons}}) when BlockReasons =/= [] ->
+    blocked;
+status(_) ->
+    running.
+
+add_pending(Elem, State = #{dest := Dest}) ->
+    Pending = maps:get(pending, Dest, queue:new()),
+    State#{dest => Dest#{pending => queue:in(Elem, Pending)}}.
+
+pop_pending(State = #{dest := Dest}) ->
+    Pending = maps:get(pending, Dest, queue:new()),
+    case queue:out(Pending) of
+        {empty, _} ->
+            empty;
+        {{value, Elem}, Pending2} ->
+            {Elem, State#{dest => Dest#{pending => Pending2}}}
+    end.
+
 make_conn_and_chan([], {VHost, Name} = _ShovelName) ->
     rabbit_log:error(
-          "Shovel '~s' in vhost '~s' has no more URIs to try for connection",
+          "Shovel '~ts' in vhost '~ts' has no more URIs to try for connection",
           [Name, VHost]),
     erlang:error(failed_to_connect_using_provided_uris);
 make_conn_and_chan([], ShovelName) ->
     rabbit_log:error(
-          "Shovel '~s' has no more URIs to try for connection",
+          "Shovel '~ts' has no more URIs to try for connection",
           [ShovelName]),
     erlang:error(failed_to_connect_using_provided_uris);
 make_conn_and_chan(URIs, ShovelName) ->
@@ -343,11 +439,11 @@ do_make_conn_and_chan(URIs, ShovelName) ->
 
 log_connection_failure(Reason, URI, {VHost, Name} = _ShovelName) ->
     rabbit_log:error(
-          "Shovel '~s' in vhost '~s' failed to connect (URI: ~s): ~s",
+          "Shovel '~ts' in vhost '~ts' failed to connect (URI: ~ts): ~ts",
       [Name, VHost, amqp_uri:remove_credentials(URI), human_readable_connection_error(Reason)]);
 log_connection_failure(Reason, URI, ShovelName) ->
     rabbit_log:error(
-          "Shovel '~s' failed to connect (URI: ~s): ~s",
+          "Shovel '~ts' failed to connect (URI: ~ts): ~ts",
           [ShovelName, amqp_uri:remove_credentials(URI), human_readable_connection_error(Reason)]).
 
 human_readable_connection_error({auth_failure, Msg}) ->
@@ -371,7 +467,7 @@ human_readable_connection_error(eacces) ->
     "This may be due to insufficient RabbitMQ process permissions or "
     "a reserved IP address used as destination";
 human_readable_connection_error(Other) ->
-    rabbit_misc:format("~p", [Other]).
+    rabbit_misc:format("~tp", [Other]).
 
 get_connection_name(ShovelName) when is_atom(ShovelName) ->
     Prefix = <<"Shovel ">>,

@@ -66,24 +66,17 @@ init_per_testcase(Testcase, Config) ->
             ClusterSize = ?config(rmq_nodes_count, Config),
             TestNumber = rabbit_ct_helpers:testcase_number(Config, ?MODULE, Testcase),
             Group = proplists:get_value(name, ?config(tc_group_properties, Config)),
-            Q = rabbit_data_coercion:to_binary(io_lib:format("~p_~p", [Group, Testcase])),
+            Q = rabbit_data_coercion:to_binary(io_lib:format("~p_~tp", [Group, Testcase])),
             Config1 = rabbit_ct_helpers:set_config(Config, [
                                                             {rmq_nodename_suffix, Testcase},
                                                             {tcp_ports_base, {skip_n_nodes, TestNumber * ClusterSize}},
                                                             {queue_name, Q},
                                                             {queue_args, [{<<"x-queue-type">>, longstr, <<"quorum">>}]}
                                                            ]),
-            Config2 = rabbit_ct_helpers:run_steps(
-                        Config1,
-                        rabbit_ct_broker_helpers:setup_steps() ++
-                        rabbit_ct_client_helpers:setup_steps()),
-            case rabbit_ct_broker_helpers:enable_feature_flag(Config2, quorum_queue) of
-                ok ->
-                    Config2;
-                Skip ->
-                    end_per_testcase(Testcase, Config2),
-                    Skip
-            end
+            rabbit_ct_helpers:run_steps(
+              Config1,
+              rabbit_ct_broker_helpers:setup_steps() ++
+              rabbit_ct_client_helpers:setup_steps())
     end.
 
 end_per_testcase(Testcase, Config) ->

@@ -23,7 +23,6 @@
 -record(cq, {
     amq = undefined :: amqqueue:amqqueue(),
     name :: atom(),
-    mode :: classic | lazy,
     version :: 1 | 2,
 
     %% We have one queue per way of publishing messages (such as channels).
@@ -74,16 +73,18 @@
 %% Common Test.
 
 all() ->
-    [{group, classic_queue_tests}].
+    [{group, classic_queue_tests}, {group, classic_queue_regressions}].
 
 groups() ->
     [{classic_queue_tests, [], [
 %        manual%,
         classic_queue_v1,
-        lazy_queue_v1,
-        classic_queue_v2,
-        lazy_queue_v2
-    ]}].
+        classic_queue_v2
+     ]},
+     {classic_queue_regressions, [], [
+        reg_v1_full_recover_only_journal
+     ]}
+    ].
 
 init_per_suite(Config) ->
     rabbit_ct_helpers:log_environment(),
@@ -92,7 +93,7 @@ init_per_suite(Config) ->
 end_per_suite(Config) ->
     rabbit_ct_helpers:run_teardown_steps(Config).
 
-init_per_group(Group = classic_queue_tests, Config) ->
+init_per_group(Group, Config) ->
     Config1 = rabbit_ct_helpers:set_config(Config, [
         {rmq_nodename_suffix, Group},
         {rmq_nodes_count, 1},
@@ -117,7 +118,7 @@ init_per_group(Group = classic_queue_tests, Config) ->
         erlang, system_flag, [backtrace_depth, 16]),
     Config2.
 
-end_per_group(classic_queue_tests, Config) ->
+end_per_group(_, Config) ->
     rabbit_ct_helpers:run_steps(Config,
       rabbit_ct_client_helpers:teardown_steps() ++
       rabbit_ct_broker_helpers:teardown_steps()).
@@ -132,16 +133,16 @@ instrs_to_manual([Instrs]) ->
     io:format("~ndo_manual(Config) ->~n~n"),
     lists:foreach(fun
         ({init, CQ}) ->
-            #cq{name=Name, mode=Mode, version=Version} = CQ,
-            io:format("    St0 = #cq{name=~0p, mode=~0p, version=~0p,~n"
+            #cq{name=Name, version=Version} = CQ,
+            io:format("    St0 = #cq{name=~0p, version=~0p,~n"
                       "              config=minimal_config(Config)},~n~n",
-                      [Name, Mode, Version]);
+                      [Name, Version]);
         ({set, {var,Var}, {call, ?MODULE, cmd_setup_queue, _}}) ->
             Res = "Res" ++ integer_to_list(Var),
             PrevSt = "St" ++ integer_to_list(Var - 1),
             St = "St" ++ integer_to_list(Var),
-            io:format("    ~s = cmd_setup_queue(~s),~n"
-                      "    ~s = ~s#cq{amq=~s},~n~n",
+            io:format("    ~ts = cmd_setup_queue(~ts),~n"
+                      "    ~ts = ~ts#cq{amq=~ts},~n~n",
                       [Res, PrevSt, St, PrevSt, Res]);
         ({set, {var,Var}, {call, ?MODULE, Cmd, [#cq{}|Args]}}) ->
             Res = "Res" ++ integer_to_list(Var),
@@ -151,9 +152,9 @@ instrs_to_manual([Instrs]) ->
                                     {var,V} -> "Res" ++ integer_to_list(V);
                                     _ -> io_lib:format("~0p", [A])
                                 end] || A <- Args],
-            io:format("    ~s = ~s(~s~s),~n"
-                      "    true = postcondition(~s, {call, undefined, ~s, [~s~s]}, ~s),~n"
-                      "    ~s = next_state(~s, ~s, {call, undefined, ~s, [~s~s]}),~n~n",
+            io:format("    ~ts = ~ts(~ts~ts),~n"
+                      "    true = postcondition(~ts, {call, undefined, ~ts, [~ts~ts]}, ~ts),~n"
+                      "    ~ts = next_state(~ts, ~ts, {call, undefined, ~ts, [~ts~ts]}),~n~n",
                       [Res, Cmd, PrevSt, ExtraArgs,
                        PrevSt, Cmd, PrevSt, ExtraArgs, Res,
                        St, PrevSt, Res, Cmd, PrevSt, ExtraArgs]);
@@ -168,9 +169,9 @@ instrs_to_manual([Instrs]) ->
                 "" -> "";
                 ", " ++ ExtraArgs0 -> ExtraArgs0
             end,
-            io:format("    ~s = ~s(~s),~n"
-                      "    true = postcondition(~s, {call, undefined, ~s, [~s]}, ~s),~n"
-                      "    ~s = next_state(~s, ~s, {call, undefined, ~s, [~s]}),~n~n",
+            io:format("    ~ts = ~ts(~ts),~n"
+                      "    true = postcondition(~ts, {call, undefined, ~ts, [~ts]}, ~ts),~n"
+                      "    ~ts = next_state(~ts, ~ts, {call, undefined, ~ts, [~ts]}),~n~n",
                       [Res, Cmd, ExtraArgs,
                        PrevSt, Cmd, ExtraArgs, Res,
                        St, PrevSt, Res, Cmd, ExtraArgs])
@@ -202,15 +203,6 @@ do_classic_queue_v1(Config) ->
                              [{on_output, on_output_fun()},
                               {numtests, ?NUM_TESTS}]).
 
-lazy_queue_v1(Config) ->
-    true = rabbit_ct_broker_helpers:rpc(Config, 0,
-        ?MODULE, do_lazy_queue_v1, [Config]).
-
-do_lazy_queue_v1(Config) ->
-    true = proper:quickcheck(prop_lazy_queue_v1(Config),
-                             [{on_output, on_output_fun()},
-                              {numtests, ?NUM_TESTS}]).
-
 classic_queue_v2(Config) ->
     true = rabbit_ct_broker_helpers:rpc(Config, 0,
         ?MODULE, do_classic_queue_v2, [Config]).
@@ -220,20 +212,11 @@ do_classic_queue_v2(Config) ->
                              [{on_output, on_output_fun()},
                               {numtests, ?NUM_TESTS}]).
 
-lazy_queue_v2(Config) ->
-    true = rabbit_ct_broker_helpers:rpc(Config, 0,
-        ?MODULE, do_lazy_queue_v2, [Config]).
-
-do_lazy_queue_v2(Config) ->
-    true = proper:quickcheck(prop_lazy_queue_v2(Config),
-                             [{on_output, on_output_fun()},
-                              {numtests, ?NUM_TESTS}]).
-
 on_output_fun() ->
     fun (".", _) -> ok; % don't print the '.'s on new lines
         ("!", _) -> ok;
         ("~n", _) -> ok; % don't print empty lines; CT adds many to logs already
-        ("~w~n", A) -> logger:error("~p~n", [A]); % make sure this gets sent to the terminal, it's important
+        ("~w~n", A) -> logger:error("~tp~n", [A]); % make sure this gets sent to the terminal, it's important
         (F, A) -> io:format(F, A)
     end.
 
@@ -241,25 +224,13 @@ on_output_fun() ->
 
 prop_classic_queue_v1(Config) ->
     {ok, LimiterPid} = rabbit_limiter:start_link(no_id),
-    InitialState = #cq{name=?FUNCTION_NAME, mode=default, version=1,
-                       config=minimal_config(Config), limiter=LimiterPid},
-    prop_common(InitialState).
-
-prop_lazy_queue_v1(Config) ->
-    {ok, LimiterPid} = rabbit_limiter:start_link(no_id),
-    InitialState = #cq{name=?FUNCTION_NAME, mode=lazy, version=1,
+    InitialState = #cq{name=?FUNCTION_NAME, version=1,
                        config=minimal_config(Config), limiter=LimiterPid},
     prop_common(InitialState).
 
 prop_classic_queue_v2(Config) ->
     {ok, LimiterPid} = rabbit_limiter:start_link(no_id),
-    InitialState = #cq{name=?FUNCTION_NAME, mode=default, version=2,
-                       config=minimal_config(Config), limiter=LimiterPid},
-    prop_common(InitialState).
-
-prop_lazy_queue_v2(Config) ->
-    {ok, LimiterPid} = rabbit_limiter:start_link(no_id),
-    InitialState = #cq{name=?FUNCTION_NAME, mode=lazy, version=2,
+    InitialState = #cq{name=?FUNCTION_NAME, version=2,
                        config=minimal_config(Config), limiter=LimiterPid},
     prop_common(InitialState).
 
@@ -268,7 +239,7 @@ prop_common(InitialState) ->
         ?TRAPEXIT(begin
             {History, State, Result} = run_commands(?MODULE, Commands),
             cmd_teardown_queue(State),
-            ?WHENFAIL(logger:error("History: ~p~nState: ~p~nResult: ~p",
+            ?WHENFAIL(logger:error("History: ~tp~nState: ~tp~nResult: ~tp",
                                    [History, State, Result]),
                       aggregate(command_names(Commands), Result =:= ok))
         end)
@@ -313,9 +284,7 @@ command(St) ->
         %% These change internal configuration.
         { 10, {call, ?MODULE, cmd_set_v2_check_crc32, [boolean()]}},
         %% These set policies.
-        { 50, {call, ?MODULE, cmd_set_mode, [St, oneof([default, lazy])]}},
-        { 50, {call, ?MODULE, cmd_set_version, [St, oneof([1, 2])]}},
-        { 50, {call, ?MODULE, cmd_set_mode_version, [oneof([default, lazy]), oneof([1, 2])]}},
+        { 50, {call, ?MODULE, cmd_set_version, [oneof([1, 2])]}},
         %% These are direct operations using internal functions.
         { 50, {call, ?MODULE, cmd_publish_msg, [St, integer(0, 1024*1024), integer(1, 2), boolean(), expiration()]}},
         { 50, {call, ?MODULE, cmd_basic_get_msg, [St]}},
@@ -371,12 +340,8 @@ next_state(St=#cq{q=Q0, confirmed=Confirmed, uncertain=Uncertain0}, AMQ, {call, 
     St#cq{amq=AMQ, q=Q, restarted=true, crashed=true, uncertain=Uncertain};
 next_state(St, _, {call, _, cmd_set_v2_check_crc32, _}) ->
     St;
-next_state(St, _, {call, _, cmd_set_mode, [_, Mode]}) ->
-    St#cq{mode=Mode};
-next_state(St, _, {call, _, cmd_set_version, [_, Version]}) ->
+next_state(St, _, {call, _, cmd_set_version, [Version]}) ->
     St#cq{version=Version};
-next_state(St, _, {call, _, cmd_set_mode_version, [Mode, Version]}) ->
-    St#cq{mode=Mode, version=Version};
 next_state(St=#cq{q=Q}, Msg, {call, _, cmd_publish_msg, _}) ->
     IntQ = maps:get(internal, Q, queue:new()),
     St#cq{q=Q#{internal => queue:in(Msg, IntQ)}};
@@ -562,14 +527,8 @@ postcondition(_, {call, _, Cmd, _}, Q) when
     element(1, Q) =:= amqqueue;
 postcondition(_, {call, _, cmd_set_v2_check_crc32, _}, Res) ->
     Res =:= ok;
-postcondition(#cq{amq=AMQ}, {call, _, cmd_set_mode, [_, Mode]}, _) ->
-    do_check_queue_mode(AMQ, Mode) =:= ok;
-postcondition(#cq{amq=AMQ}, {call, _, cmd_set_version, [_, Version]}, _) ->
+postcondition(#cq{amq=AMQ}, {call, _, cmd_set_version, [Version]}, _) ->
     do_check_queue_version(AMQ, Version) =:= ok;
-postcondition(#cq{amq=AMQ}, {call, _, cmd_set_mode_version, [Mode, Version]}, _) ->
-    (do_check_queue_mode(AMQ, Mode) =:= ok)
-    andalso
-    (do_check_queue_version(AMQ, Version) =:= ok);
 postcondition(_, {call, _, cmd_publish_msg, _}, Msg) ->
     is_record(Msg, amqp_msg);
 postcondition(_, {call, _, cmd_purge, _}, Res) ->
@@ -585,7 +544,11 @@ postcondition(_, {call, _, cmd_channel_publish, _}, Msg) ->
 postcondition(_, {call, _, cmd_channel_publish_many, _}, Msgs) ->
     lists:all(fun(Msg) -> is_record(Msg, amqp_msg) end, Msgs);
 postcondition(_, {call, _, cmd_channel_wait_for_confirms, _}, Res) ->
-    Res =:= true;
+    %% It is possible for nacks to be sent during restarts.
+    %% This is a rare event but it is not a bug, the client
+    %% is simply expected to take action. Timeouts are
+    %% always a bug however (acks/nacks not sent at all).
+    Res =:= true orelse Res =:= false;
 postcondition(_, {call, _, cmd_channel_consume, _}, _) ->
     true;
 postcondition(_, {call, _, cmd_channel_cancel, _}, _) ->
@@ -732,22 +695,20 @@ crashed_and_previously_received(#cq{crashed=Crashed, received=Received}, Msg) ->
 
 %% Helpers.
 
-cmd_setup_queue(St=#cq{name=Name, mode=Mode, version=Version}) ->
+cmd_setup_queue(St=#cq{name=Name, version=Version}) ->
     ?DEBUG("~0p", [St]),
     IsDurable = true, %% We want to be able to restart the queue process.
     IsAutoDelete = false,
-    %% We cannot use args to set mode/version as the arguments override
+    %% We cannot use args to set the version as the arguments override
     %% the policies and we also want to test policy changes.
-    cmd_set_mode_version(Mode, Version),
+    cmd_set_version(Version),
     Args = [
-%        {<<"x-queue-mode">>, longstr, atom_to_binary(Mode, utf8)},
 %        {<<"x-queue-version">>, long, Version}
     ],
     QName = rabbit_misc:r(<<"/">>, queue, iolist_to_binary([atom_to_binary(Name, utf8), $_,
                                                             integer_to_binary(erlang:unique_integer([positive]))])),
     {new, AMQ} = rabbit_amqqueue:declare(QName, IsDurable, IsAutoDelete, Args, none, <<"acting-user">>),
-    %% We check that the queue was creating with the right mode/version.
-    ok = do_check_queue_mode(AMQ, Mode),
+    %% We check that the queue was creating with the right version.
     ok = do_check_queue_version(AMQ, Version),
     AMQ.
 
@@ -764,7 +725,7 @@ cmd_teardown_queue(St=#cq{amq=AMQ, channels=Channels}) ->
         || Ch <- maps:keys(Channels)],
     %% Then we can delete the queue.
     rabbit_amqqueue:delete(AMQ, false, false, <<"acting-user">>),
-    rabbit_policy:delete(<<"/">>, <<"queue-mode-version-policy">>, <<"acting-user">>),
+    rabbit_policy:delete(<<"/">>, <<"queue-version-policy">>, <<"acting-user">>),
     ok.
 
 cmd_restart_vhost_clean(St=#cq{amq=AMQ0}) ->
@@ -808,27 +769,11 @@ do_wait_updated_amqqueue(Name, Pid) ->
 cmd_set_v2_check_crc32(Value) ->
     application:set_env(rabbit, classic_queue_store_v2_check_crc32, Value).
 
-cmd_set_mode(St=#cq{version=Version}, Mode) ->
-    ?DEBUG("~0p ~0p", [St, Mode]),
-    do_set_policy(Mode, Version).
-
-%% We loop until the queue has switched mode.
-do_check_queue_mode(AMQ, Mode) ->
-    do_check_queue_mode(AMQ, Mode, 1000).
-
-do_check_queue_mode(_, _, 0) ->
-    error;
-do_check_queue_mode(AMQ, Mode, N) ->
-    timer:sleep(1),
-    [{backing_queue_status, Status}] = rabbit_amqqueue:info(AMQ, [backing_queue_status]),
-    case proplists:get_value(mode, Status) of
-        Mode -> ok;
-        _ -> do_check_queue_mode(AMQ, Mode, N - 1)
-    end.
-
-cmd_set_version(St=#cq{mode=Mode}, Version) ->
-    ?DEBUG("~0p ~0p", [St, Version]),
-    do_set_policy(Mode, Version).
+cmd_set_version(Version) ->
+    ?DEBUG("~0p ~0p", [Version]),
+    rabbit_policy:set(<<"/">>, <<"queue-version-policy">>, <<".*">>,
+        [{<<"queue-version">>, Version}],
+        0, <<"queues">>, <<"acting-user">>).
 
 %% We loop until the queue has switched version.
 do_check_queue_version(AMQ, Version) ->
@@ -843,16 +788,6 @@ do_check_queue_version(AMQ, Version, N) ->
         Version -> ok;
         _ -> do_check_queue_version(AMQ, Version, N - 1)
     end.
-
-cmd_set_mode_version(Mode, Version) ->
-    ?DEBUG("~0p ~0p", [Mode, Version]),
-    do_set_policy(Mode, Version).
-
-do_set_policy(Mode, Version) ->
-    rabbit_policy:set(<<"/">>, <<"queue-mode-version-policy">>, <<".*">>,
-        [{<<"queue-mode">>, atom_to_binary(Mode, utf8)},
-         {<<"queue-version">>, Version}],
-        0, <<"queues">>, <<"acting-user">>).
 
 cmd_publish_msg(St=#cq{amq=AMQ}, PayloadSize, DeliveryMode, Mandatory, Expiration) ->
     ?DEBUG("~0p ~0p ~0p ~0p ~0p", [St, PayloadSize, DeliveryMode, Mandatory, Expiration]),
@@ -1155,3 +1090,38 @@ queue_fold(Fun, Acc0, {R, F}) when is_function(Fun, 2), is_list(R), is_list(F) -
     lists:foldr(Fun, Acc1, R);
 queue_fold(Fun, Acc0, Q) ->
     erlang:error(badarg, [Fun, Acc0, Q]).
+
+%% Regression tests.
+%%
+%% These tests are hard to reproduce by running the test suite normally
+%% because they require a very specific sequence of events.
+
+reg_v1_full_recover_only_journal(Config) ->
+    true = rabbit_ct_broker_helpers:rpc(Config, 0,
+        ?MODULE, do_reg_v1_full_recover_only_journal, [Config]).
+
+do_reg_v1_full_recover_only_journal(Config) ->
+
+    St0 = #cq{name=prop_classic_queue_v1, version=1,
+              config=minimal_config(Config)},
+
+    Res1 = cmd_setup_queue(St0),
+    St3 = St0#cq{amq=Res1},
+
+    Res4 = cmd_channel_open(St3),
+    true = postcondition(St3, {call, undefined, cmd_channel_open, [St3]}, Res4),
+    St7 = next_state(St3, Res4, {call, undefined, cmd_channel_open, [St3]}),
+
+    Res8 = cmd_restart_queue_dirty(St7),
+    true = postcondition(St7, {call, undefined, cmd_restart_queue_dirty, [St7]}, Res8),
+    St11 = next_state(St7, Res8, {call, undefined, cmd_restart_queue_dirty, [St7]}),
+
+    Res12 = cmd_channel_publish_many(St11, Res4, 117, 4541, 2, true, undefined),
+    true = postcondition(St11, {call, undefined, cmd_channel_publish_many, [St11, Res4, 117, 4541, 2, true, undefined]}, Res12),
+    St14 = next_state(St11, Res12, {call, undefined, cmd_channel_publish_many, [St11, Res4, 117, 4541, 2, true, undefined]}),
+
+    Res15 = cmd_restart_vhost_clean(St14),
+    true = postcondition(St14, {call, undefined, cmd_restart_vhost_clean, [St14]}, Res15),
+    _ = next_state(St14, Res15, {call, undefined, cmd_restart_vhost_clean, [St14]}),
+
+    true.

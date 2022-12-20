@@ -19,10 +19,6 @@
 
 -behaviour('Elixir.RabbitMQ.CLI.CommandBehaviour').
 
--ignore_xref([{'Elixir.RabbitMQ.CLI.DefaultOutput', output, 1},
-              {'Elixir.RabbitMQ.CLI.Core.Helpers', cli_acting_user, 0},
-              {'Elixir.RabbitMQ.CLI.Core.ExitCodes', exit_software, 0}]).
-
 -export([scopes/0,
          usage/0,
          usage_additional/0,
@@ -39,7 +35,7 @@ scopes() ->
     [streams].
 
 description() ->
-    <<"Delete a super stream (experimental feature)">>.
+    <<"Delete a super stream">>.
 
 help_section() ->
     {plugin, stream}.
@@ -79,14 +75,14 @@ delete_super_stream(NodeName, Timeout, VHost, SuperStream) ->
     of
         ok ->
             {ok,
-             rabbit_misc:format("Super stream ~s has been deleted",
+             rabbit_misc:format("Super stream ~ts has been deleted",
                                 [SuperStream])};
         Error ->
             Error
     end.
 
 banner(_, _) ->
-    <<"Deleting a super stream (experimental feature)...">>.
+    <<"Deleting a super stream...">>.
 
 output({error, Msg}, _Opts) ->
     {error, 'Elixir.RabbitMQ.CLI.Core.ExitCodes':exit_software(), Msg};

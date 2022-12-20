@@ -681,6 +681,121 @@ fun(Conf) ->
     [list_to_binary(Configure), list_to_binary(Read), list_to_binary(Write)]
 end}.
 
+{mapping, "default_policies.operator.$id.vhost_pattern", "rabbit.default_policies.operator", [
+    {include_default, 1},
+    {commented, ".*"},
+    {validators, ["valid_regex"]},
+    {datatype, string}
+]}.
+
+{mapping, "default_policies.operator.$id.queue_pattern", "rabbit.default_policies.operator", [
+    {include_default, 1},
+    {commented, ".*"},
+    {validators, ["valid_regex"]},
+    {datatype, string}
+]}.
+
+{mapping, "default_policies.operator.$id.expires", "rabbit.default_policies.operator", [
+    {include_default, 1},
+    {commented, "1s"},
+    {datatype, {duration, ms}}
+]}.
+
+{mapping, "default_policies.operator.$id.message_ttl", "rabbit.default_policies.operator", [
+    {include_default, 1},
+    {commented, "1s"},
+    {datatype, {duration, ms}}
+]}.
+
+{mapping, "default_policies.operator.$id.max_length", "rabbit.default_policies.operator", [
+    {include_default, 1},
+    {commented, 100},
+    {validators, ["non_zero_positive_integer"]},
+    {datatype, integer}
+]}.
+
+{mapping, "default_policies.operator.$id.max_length_bytes", "rabbit.default_policies.operator", [
+    {include_default, 1},
+    {commented, "1GB"},
+    {validators, ["non_zero_positive_integer"]},
+    {datatype, bytesize}
+]}.
+
+{mapping, "default_policies.operator.$id.max_in_memory_bytes", "rabbit.default_policies.operator", [
+        {include_default, 1},
+        {commented, "1GB"},
+        {validators, ["non_zero_positive_integer"]},
+        {datatype, bytesize}
+    ]}.
+
+{mapping, "default_policies.operator.$id.max_in_memory_length", "rabbit.default_policies.operator",
+    [
+        {include_default, 1},
+        {commented, 1000},
+        {validators, ["non_zero_positive_integer"]},
+        {datatype, integer}
+    ]}.
+
+{mapping, "default_policies.operator.$id.delivery_limit", "rabbit.default_policies.operator", [
+    {include_default, 1},
+    {commented, 1},
+    {validators, ["non_zero_positive_integer"]},
+    {datatype, integer}
+]}.
+
+{translation, "rabbit.default_policies.operator", fun(Conf) ->
+    Props = rabbit_cuttlefish:aggregate_props(Conf, ["default_policies", "operator"]),
+    Props1 = lists:map(
+                fun({K, Ss}) ->
+                    {K,
+                     lists:map(fun({N, V}) ->
+                        {binary:replace(N, <<"_">>, <<"-">>, [global]), V}
+                     end, Ss)}
+                end, Props),
+    case Props1 of
+        [] -> cuttlefish:unset();
+        _ -> Props1
+    end,
+    Props1
+end}.
+
+{mapping, "default_limits.vhosts.$id.pattern", "rabbit.default_limits.vhosts", [
+    {include_default, 1},
+    {commented, ".*"},
+    {validators, ["valid_regex"]},
+    {datatype, string}
+]}.
+
+{mapping, "default_limits.vhosts.$id.max_connections", "rabbit.default_limits.vhosts", [
+    {include_default, 1},
+    {commented, 1000},
+    {validators, [ "non_zero_positive_integer"]},
+    {datatype, integer}
+]}.
+
+{mapping, "default_limits.vhosts.$id.max_queues", "rabbit.default_limits.vhosts", [
+    {include_default, 1},
+    {commented, 100},
+    {validators, [ "non_zero_positive_integer"]},
+    {datatype, integer}
+]}.
+
+{translation, "rabbit.default_limits.vhosts", fun(Conf) ->
+    Props = rabbit_cuttlefish:aggregate_props(Conf, ["default_limits", "vhosts"]),
+    Props1 = lists:map(
+                fun({K, Ss}) ->
+                    {K,
+                     lists:map(fun({N, V}) ->
+                        {binary:replace(N, <<"_">>, <<"-">>, [global]), V}
+                     end, Ss)}
+                end, Props),
+    case Props1 of
+        [] -> cuttlefish:unset();
+        _ -> Props1
+    end,
+    Props1
+end}.
+
 %% Tags for default user
 %%
 %% For more details about tags, see the documentation for the
@@ -890,7 +1005,12 @@ fun(Conf) ->
     case {Absolute, Relative} of
         {undefined, undefined} -> cuttlefish:invalid("No vm watermark defined");
         {_,         undefined} -> {absolute, Absolute};
-        _                      -> Relative
+        {undefined, _}         -> Relative;
+        _                      ->
+            cuttlefish:warn("Both vm_memory_high_watermark.absolute and "
+                            "vm_memory_high_watermark.relative are configured. "
+                            "vm_memory_high_watermark.absolute has precedence"),
+            {absolute, Absolute}
     end
 end}.
 
@@ -958,7 +1078,12 @@ fun(Conf) ->
     case {Absolute, Relative} of
         {undefined, undefined} -> cuttlefish:invalid("No disk limit defined");
         {_,         undefined} -> Absolute;
-        _                      -> {mem_relative, Relative}
+        {undefined, _}         -> {mem_relative, Relative};
+        _                      ->
+            cuttlefish:warn("Both disk_free_limit.absolute and "
+                            "disk_free_limit.relative are configured. "
+                            "disk_free_limit.absolute has precedence"),
+            Absolute
     end
 end}.
 
@@ -2237,6 +2362,20 @@ end}.
     end
 }.
 
+{mapping, "raft.adaptive_failure_detector.poll_interval", "aten.poll_interval", [
+  {datatype, integer},
+  {validators, ["non_zero_positive_integer"]}
+]}.
+
+{translation, "aten.poll_interval",
+  fun(Conf) ->
+      case cuttlefish:conf_get("raft.adaptive_failure_detector.poll_interval", Conf, undefined) of
+          undefined -> cuttlefish:unset();
+          Val       -> Val
+      end
+  end
+}.
+
 %%
 %% Backing queue version
 %%
@@ -2255,6 +2394,9 @@ end}.
         end
     end
 }.
+
+{mapping, "quorum_queue.compute_checksums", "rabbit.quorum_compute_checksums", [
+    {datatype, {enum, [true, false]}}]}.
 
 % ===============================
 % Validators
@@ -2317,3 +2459,9 @@ end}.
 fun(Int) when is_integer(Int) ->
     Int >= 1
 end}.
+
+{validator, "valid_regex", "string must be a valid regular expression",
+ fun("")     -> false;
+    (String) -> {Res, _ } = re:compile(String),
+                Res =:= ok
+ end}.

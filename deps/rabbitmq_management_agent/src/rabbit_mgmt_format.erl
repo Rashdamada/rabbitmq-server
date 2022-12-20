@@ -154,7 +154,7 @@ ip(IP)      -> list_to_binary(rabbit_misc:ntoa(IP)).
 ipb(unknown) -> unknown;
 ipb(IP)      -> list_to_binary(rabbit_misc:ntoab(IP)).
 
-addr(S)    when is_list(S); is_atom(S); is_binary(S) -> print("~s", S);
+addr(S)    when is_list(S); is_atom(S); is_binary(S) -> print("~ts", S);
 addr(Addr) when is_tuple(Addr)                       -> ip(Addr).
 
 port(Port) when is_number(Port) -> Port;
@@ -177,9 +177,9 @@ protocol(unknown) ->
 protocol(Version = {_Major, _Minor, _Revision}) ->
     protocol({'AMQP', Version});
 protocol({Family, Version}) ->
-    print("~s ~s", [Family, protocol_version(Version)]);
+    print("~ts ~ts", [Family, protocol_version(Version)]);
 protocol(Protocol) when is_binary(Protocol) ->
-    print("~s", [Protocol]).
+    print("~ts", [Protocol]).
 
 protocol_version(Arbitrary)
   when is_list(Arbitrary)                  -> Arbitrary;
@@ -252,7 +252,7 @@ format_socket_opts([{ssl_opts, Value} | Tail], Acc) ->
 %% exclude options that have values that are nested
 %% data structures or may include functions. They are fairly
 %% obscure and not worth reporting via HTTP API.
-format_socket_opts([{verify_fun, _Value} | Tail], Acc) ->
+format_socket_opts([{customize_hostname_check, _Value} | Tail], Acc) ->
     format_socket_opts(Tail, Acc);
 format_socket_opts([{crl_cache, _Value} | Tail], Acc) ->
     format_socket_opts(Tail, Acc);
@@ -277,7 +277,10 @@ format_socket_opts([{ciphers, _Value} | Tail], Acc) ->
 format_socket_opts([Head | Tail], Acc) when is_atom(Head) ->
     format_socket_opts(Tail, [{Head, true} | Acc]);
 %% verify_fun value is a tuple that includes a function
-format_socket_opts([_Head = {verify_fun, _Value} | Tail], Acc) ->
+format_socket_opts([{verify_fun, _Value} | Tail], Acc) ->
+    format_socket_opts(Tail, Acc);
+%% match_fun value is a tuple that includes a function
+format_socket_opts([{match_fun, _Value} | Tail], Acc) ->
     format_socket_opts(Tail, Acc);
 format_socket_opts([Head = {Name, Value} | Tail], Acc) when is_list(Value) ->
     case io_lib:printable_unicode_list(Value) of

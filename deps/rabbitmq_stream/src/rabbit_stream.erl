@@ -39,8 +39,7 @@
 -include("rabbit_stream_metrics.hrl").
 
 start(_Type, _Args) ->
-    FeatureFlagsEnabled = rabbit_ff_registry:list(enabled),
-    case maps:is_key(stream_queue, FeatureFlagsEnabled) of
+    case rabbit_feature_flags:is_enabled(stream_queue) of
         true ->
             rabbit_stream_metrics:init(),
             rabbit_global_counters:init([{protocol, stream}],
@@ -208,18 +207,17 @@ emit_publisher_info_local(VHost, Items, Ref, AggregatorPid) ->
 
 list(VHost) ->
     [Client
-     || {_, ListSup, _, _}
-            <- supervisor2:which_children(rabbit_stream_sup),
+     || {_, ListSup, _, _} <- supervisor:which_children(rabbit_stream_sup),
         {_, RanchEmbeddedSup, supervisor, _}
-            <- supervisor2:which_children(ListSup),
+            <- supervisor:which_children(ListSup),
         {{ranch_listener_sup, _}, RanchListSup, _, _}
             <- supervisor:which_children(RanchEmbeddedSup),
         {ranch_conns_sup_sup, RanchConnsSup, supervisor, _}
-            <- supervisor2:which_children(RanchListSup),
+            <- supervisor:which_children(RanchListSup),
         {_, RanchConnSup, supervisor, _}
-            <- supervisor2:which_children(RanchConnsSup),
+            <- supervisor:which_children(RanchConnsSup),
         {_, StreamClientSup, supervisor, _}
-            <- supervisor2:which_children(RanchConnSup),
+            <- supervisor:which_children(RanchConnSup),
         {rabbit_stream_reader, Client, _, _}
             <- supervisor:which_children(StreamClientSup),
         rabbit_stream_reader:in_vhost(Client, VHost)].

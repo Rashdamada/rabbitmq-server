@@ -48,7 +48,7 @@ resource_exists(ReqData, Context) ->
                             %% Deleting or restarting a shovel
                             case get_shovel_node(VHost, Name, ReqData, Context) of
                                 undefined ->
-                                    rabbit_log:error("Shovel with the name '~s' was not found on virtual host '~s'",
+                                    rabbit_log:error("Shovel with the name '~ts' was not found on virtual host '~ts'",
                                         [Name, VHost]),
                                     false;
                                 _ ->
@@ -72,24 +72,34 @@ delete_resource(ReqData, #context{user = #user{username = Username}}=Context) ->
                     false;
                 Name ->
                     case get_shovel_node(VHost, Name, ReqData, Context) of
-                        undefined -> rabbit_log:error("Could not find shovel data for shovel '~s' in vhost: '~s'", [Name, VHost]),
+                        undefined -> rabbit_log:error("Could not find shovel data for shovel '~ts' in vhost: '~ts'", [Name, VHost]),
                             false;
                         Node ->
                             %% We must distinguish between a delete and restart
                             case is_restart(ReqData) of
                                 true ->
-                                    rabbit_log:info("Asked to restart shovel '~s' in vhost '~s' on node '~s'", [Name, VHost, Node]),
-                                    case rpc:call(Node, rabbit_shovel_util, restart_shovel, [VHost, Name], ?SHOVEL_CALLS_TIMEOUT_MS) of
+                                    rabbit_log:info("Asked to restart shovel '~ts' in vhost '~ts' on node '~s'", [Name, VHost, Node]),
+                                    try erpc:call(Node, rabbit_shovel_util, restart_shovel, [VHost, Name], ?SHOVEL_CALLS_TIMEOUT_MS) of
                                         ok -> true;
-                                        {_, Msg} -> rabbit_log:error(Msg),
+                                        {error, not_found} ->
+                                            rabbit_log:error("Could not find shovel data for shovel '~s' in vhost: '~s'", [Name, VHost]),
+                                            false
+                                    catch _:Reason ->
+                                            rabbit_log:error("Failed to restart shovel '~s' on vhost '~s', reason: ~p",
+                                                             [Name, VHost, Reason]),
                                             false
                                     end;
 
                                 _ ->
-                                    rabbit_log:info("Asked to delete shovel '~s' in vhost '~s' on node '~s'", [Name, VHost, Node]),
-                                    case rpc:call(Node, rabbit_shovel_util, delete_shovel, [VHost, Name, Username], ?SHOVEL_CALLS_TIMEOUT_MS) of
+                                    rabbit_log:info("Asked to delete shovel '~ts' in vhost '~ts' on node '~s'", [Name, VHost, Node]),
+                                    try erpc:call(Node, rabbit_shovel_util, delete_shovel, [VHost, Name, Username], ?SHOVEL_CALLS_TIMEOUT_MS) of
                                         ok -> true;
-                                        {_, Msg} -> rabbit_log:error(Msg),
+                                        {error, not_found} ->
+                                            rabbit_log:error("Could not find shovel data for shovel '~s' in vhost: '~s'", [Name, VHost]),
+                                            false
+                                    catch _:Reason ->
+                                            rabbit_log:error("Failed to delete shovel '~s' on vhost '~s', reason: ~p",
+                                                             [Name, VHost, Reason]),
                                             false
                                     end
 

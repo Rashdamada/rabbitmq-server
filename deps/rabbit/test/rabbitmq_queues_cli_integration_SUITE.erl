@@ -43,16 +43,9 @@ init_per_group(tests, Config0) ->
     Config1 = rabbit_ct_helpers:set_config(
                 Config0, [{rmq_nodes_count, NumNodes},
                           {rmq_nodes_clustered, true}]),
-    Config2 = rabbit_ct_helpers:run_steps(Config1,
-                                          rabbit_ct_broker_helpers:setup_steps() ++
-                                          rabbit_ct_client_helpers:setup_steps()),
-    case rabbit_ct_broker_helpers:enable_feature_flag(Config2, quorum_queue) of
-        ok ->
-            Config2;
-        Skip ->
-            end_per_group(tests, Config2),
-            Skip
-    end.
+    rabbit_ct_helpers:run_steps(Config1,
+                                rabbit_ct_broker_helpers:setup_steps() ++
+                                rabbit_ct_client_helpers:setup_steps()).
 
 end_per_group(tests, Config) ->
     rabbit_ct_helpers:run_steps(Config,
@@ -160,13 +153,13 @@ publish_confirm(Ch, QName) ->
                            #amqp_msg{props   = #'P_basic'{delivery_mode = 2},
                                      payload = <<"msg">>}),
     amqp_channel:register_confirm_handler(Ch, self()),
-    ct:pal("waiting for confirms from ~s", [QName]),
+    ct:pal("waiting for confirms from ~ts", [QName]),
     receive
         #'basic.ack'{} ->
-            ct:pal("CONFIRMED! ~s", [QName]),
+            ct:pal("CONFIRMED! ~ts", [QName]),
             ok;
         #'basic.nack'{} ->
-            ct:pal("NOT CONFIRMED! ~s", [QName]),
+            ct:pal("NOT CONFIRMED! ~ts", [QName]),
             fail
     after 10000 ->
             exit(confirm_timeout)

@@ -9,7 +9,6 @@ defmodule RabbitMQ.CLI.Core.Validators do
   alias RabbitMQ.CLI.Core.Helpers
   import RabbitMQ.CLI.Core.{CodePath, Paths}
 
-
   def chain([validator | rest], args) do
     case apply(validator, args) do
       :ok -> chain(rest, args)
@@ -48,8 +47,8 @@ defmodule RabbitMQ.CLI.Core.Validators do
     end
   end
 
-  def mnesia_dir_is_set(_, opts) do
-    case require_mnesia_dir(opts) do
+  def data_dir_is_set(_, opts) do
+    case require_data_dir(opts) do
       :ok -> :ok
       {:error, err} -> {:validation_failure, err}
     end

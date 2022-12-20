@@ -67,15 +67,10 @@ init_per_group(max_length_classic, Config) ->
       [{queue_args, [{<<"x-queue-type">>, longstr, <<"classic">>}]},
        {queue_durable, false}]);
 init_per_group(max_length_quorum, Config) ->
-    case rabbit_ct_broker_helpers:enable_feature_flag(Config, quorum_queue) of
-        ok ->
-            rabbit_ct_helpers:set_config(
-              Config,
-              [{queue_args, [{<<"x-queue-type">>, longstr, <<"quorum">>}]},
-               {queue_durable, true}]);
-        Skip ->
-            Skip
-    end;
+    rabbit_ct_helpers:set_config(
+      Config,
+      [{queue_args, [{<<"x-queue-type">>, longstr, <<"quorum">>}]},
+       {queue_durable, true}]);
 init_per_group(max_length_mirrored, Config) ->
     rabbit_ct_broker_helpers:set_ha_policy(Config, 0, <<"^max_length.*queue">>,
         <<"all">>, [{<<"ha-sync-mode">>, <<"automatic">>}]),
@@ -117,7 +112,7 @@ end_per_group(Group, Config) ->
 
 init_per_testcase(Testcase, Config) ->
     Group = proplists:get_value(name, ?config(tc_group_properties, Config)),
-    Q = rabbit_data_coercion:to_binary(io_lib:format("~p_~p", [Group, Testcase])),
+    Q = rabbit_data_coercion:to_binary(io_lib:format("~p_~tp", [Group, Testcase])),
     Config1 = rabbit_ct_helpers:set_config(Config, [{queue_name, Q}]),
     rabbit_ct_helpers:testcase_started(Config1, Testcase).
 

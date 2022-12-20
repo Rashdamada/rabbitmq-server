@@ -12,11 +12,6 @@
 
 -behaviour('Elixir.RabbitMQ.CLI.CommandBehaviour').
 
--ignore_xref([
-    {'Elixir.RabbitMQ.CLI.Core.ExitCodes', exit_dataerr, 0},
-    {'Elixir.RabbitMQ.CLI.DefaultOutput', output, 1}
-]).
-
 -export([
          usage/0,
          usage_additional/0,
@@ -88,7 +83,7 @@ output({ok, #chx_hash_ring{exchange = Resource = #resource{name = Exchange}, buc
         <<"result">>   => <<"ok">>,
         <<"node">>     => Node,
         <<"exchange">> => Exchange,
-        <<"message">>  => to_binary(rabbit_misc:format("Consistent hashing ring state for ~s",
+        <<"message">>  => to_binary(rabbit_misc:format("Consistent hashing ring state for ~ts",
                                                        [rabbit_misc:rs(Resource)])),
         <<"buckets">>  =>
             maps:from_list(lists:map(fun ({Key, #resource{kind = queue, name = Queue}}) ->
@@ -125,7 +120,7 @@ banner([Exchange], #{vhost := VirtualHost}) ->
     erlang:iolist_to_binary([<<"Inspecting consistent hashing ring state for exchange ">>,
                              to_binary(Exchange),
                              <<" in virtual host ">>,
-                             to_binary(rabbit_misc:format("'~s'", [VirtualHost])),
+                             to_binary(rabbit_misc:format("'~ts'", [VirtualHost])),
                              <<"...">>]).
 
 %%
@@ -134,6 +129,6 @@ banner([Exchange], #{vhost := VirtualHost}) ->
 
 ring_state_lines(Buckets) ->
     Fun = fun (Key, QName, Acc) ->
-            [to_binary(rabbit_misc:format("Ring index: ~b, queue: '~s'~n", [Key, QName])) | Acc]
+            [to_binary(rabbit_misc:format("Ring index: ~b, queue: '~ts'~n", [Key, QName])) | Acc]
           end,
     lists:usort(maps:fold(Fun, [], Buckets)).

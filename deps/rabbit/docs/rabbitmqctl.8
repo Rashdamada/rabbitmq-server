@@ -5,7 +5,7 @@
 .\"
 .\" Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
 .\"
-.Dd June 19, 2021
+.Dd October 26, 2022
 .Dt RABBITMQCTL 8
 .Os "RabbitMQ Server"
 .Sh NAME
@@ -44,10 +44,9 @@ the target node was not running, or
 .Nm
 could not authenticate to
 the target node successfully.
+
 To learn more, see the
-.Lk https://www.rabbitmq.com/cli.html "RabbitMQ CLI Tools guide"
-and
-.Lk https://www.rabbitmq.com/networking.html "RabbitMQ Networking guide"
+.Lk https://rabbitmq.com/cli.html "RabbitMQ CLI Tools guide"
 .\" ------------------------------------------------------------------------------------------------
 .Sh OPTIONS
 .\" ------------------------------------------------------------------------------------------------
@@ -864,6 +863,14 @@ can take any value from the list that follows:
 The name of the virtual host with non-ASCII characters escaped as in C.
 .It Cm tracing
 Whether tracing is enabled for this virtual host.
+.It Cm default_queue_type
+Default queue type for this vhost.
+.It Cm description
+Virtual host description.
+.It Cm tags
+Virtual host tags.
+.It Cm cluster_state
+Virtual host state: nodedown, running, stopped.
 .El
 .Pp
 If no
@@ -1093,7 +1100,7 @@ Readable name for the connection.
 Server port.
 .It Cm host
 Server hostname obtained via reverse DNS, or its IP address if reverse
-DNS failed or was disabled.
+DNS failed or was turned off.
 .It Cm peer_port
 Peer port.
 .It Cm peer_host
@@ -1314,7 +1321,11 @@ Whether the queue will be deleted automatically when no longer used.
 .It Cm arguments
 Queue arguments.
 .It Cm policy
-Effective policy name for the queue.
+Name of the user policy that is applied to the queue.
+.It Cm operator_policy
+Name of the operator policy that is applied to the queue.
+.It Cm effective_policy_definition
+Effective policy definition for the queue: both user and operator policy definitions merged.
 .It Cm pid
 Erlang process identifier of the queue.
 .It Cm owner_pid
@@ -1386,11 +1397,11 @@ or prefetch count.
 .It Cm memory
 Bytes of memory allocated by the runtime for the
 queue, including stack, heap and internal structures.
-.It Cm slave_pids
+.It Cm mirror_pids
 If the queue is mirrored, this lists the IDs of the mirrors (follower replicas).
 To learn more, see the
 .Lk https://www.rabbitmq.com/ha.html "RabbitMQ Mirroring guide"
-.It Cm synchronised_slave_pids
+.It Cm synchronised_mirror_pids
 If the queue is mirrored, this gives the IDs of the mirrors (follower replicas) which
 are in sync with the leader replica. To learn more, see the
 .Lk https://www.rabbitmq.com/ha.html "RabbitMQ Mirroring guide"
@@ -1408,6 +1419,8 @@ be shown with a status of
 (and most other
 .Ar queueinfoitem
 will be unavailable).
+.It Cm type
+Queue type, one of: quorum, stream, classic.
 .El
 .Pp
 If no
@@ -1420,9 +1433,45 @@ each queue of the virtual host named
 .sp
 .Dl rabbitmqctl list_queues -p my-vhost messages consumers
 .\" ------------------------------------------------------------------
-.It Cm list_unresponsive_queues Oo Fl -local Oc Oo Fl -queue-timeout Ar milliseconds Oc Oo Ar column ... Oc Op Fl -no-table-headers
+.It Cm list_unresponsive_queues Oo Fl -local Oc Oo Fl -queue-timeout Ar milliseconds Oc Oo Ar queueinfoitem ... Oc Op Fl -no-table-headers
 .Pp
-Tests queues to respond within timeout. Lists those which did not respond
+Tests queue leader replicas to respond within the given timeout. Lists those which did not respond in time.
+.Pp
+Displayed queues can be filtered by their status or location using one
+of the following mutually exclusive options:
+.Bl -tag -width Ds
+.It Fl -all
+List all queues.
+.It Fl -local
+List only those queues whose leader replica is located on the current
+node.
+.El
+.Pp
+The
+.Ar queueinfoitem
+parameter is used to indicate which queue information items to include
+in the results.
+The column order in the results will match the order of the parameters.
+.Ar queueinfoitem
+can take any value from the list that follows:
+.Bl -tag -width Ds
+.It Cm name
+The name of the queue with non\-ASCII characters escaped as in C.
+.It Cm durable
+Whether or not the queue should survive server restarts.
+.It Cm auto_delete
+Whether the queue will be deleted automatically when all of its explicit bindings are deleted.
+.It Cm arguments
+Queue arguments.
+.It Cm policy
+Effective policy name for the queue.
+.It Cm pid
+Erlang process identifier of the leader replica.
+.It Cm recoverable_mirrors
+Erlang process identifiers of the mirror replicas that are considered reachable (available).
+.It Cm type
+Queue type, one of: quorum, stream, classic.
+.El
 .Pp
 For example, this command lists only those unresponsive queues whose leader replica
 is hosted on the target node.
@@ -1695,19 +1744,25 @@ not be visible to
 .Nm .
 .Bl -tag -width Ds
 .\" ------------------------------------------------------------------
-.It Cm add_vhost Ar vhost
+.It Cm add_vhost Ar vhost Op Fl -description Ar desc Fl -tags Ar tags Fl -default-queue-type Ar default-q-type
 .Bl -tag -width Ds
 .It Ar vhost
 The name of the virtual host entry to create.
+.It Ar desc
+Arbitrary virtual host description, e.g. its purpose, for operator's convenience.
+.It Ar tags
+A comma-separated list of virtual host tags for operator's convenient
+.It Ar default-q-type
+If clients do not specify queue type explicitly, this type will be used. One of: quorum, stream.
 .El
 .Pp
 Creates a virtual host.
 .Pp
 For example, this command instructs the RabbitMQ broker to create a new
 virtual host called
-.Qq test :
+.Qq project9_dev_18 :
 .Pp
-.Dl rabbitmqctl add_vhost test
+.Dl rabbitmqctl add_vhost project9_dev_18 --description 'Dev environment no. 18' --tags "dev,project9"
 .\" ------------------------------------------------------------------
 .It Cm clear_vhost_limits Op Fl p Ar vhost
 .Pp
@@ -1746,10 +1801,10 @@ Suppresses the
 parameter.
 .El
 .\" ------------------------------------------------------------------
-.It Cm restart_vhost Ar vhost
+.It Cm restart_vhost Oo Fl p Ar vhost Oc
 .Bl -tag -width Ds
 .It Ar vhost
-The name of the virtual host entry to restart.
+The name of the virtual host entry to restart, defaulting to "/".
 .El
 .Pp
 Restarts a failed vhost data stores and queues.
@@ -2031,7 +2086,7 @@ Enables a feature flag on the target node.
 .Pp
 Example:
 .Sp
-.Dl rabbitmqctl enable_feature_flag quorum_queue
+.Dl rabbitmqctl enable_feature_flag stream_queue
 .Pp
 You can also enable all feature flags by specifying "all":
 .Sp
@@ -2225,7 +2280,7 @@ SASL authentication mechanism used, such as
 .Qq PLAIN .
 .It Cm host
 Server hostname obtained via reverse DNS, or its IP address if reverse
-DNS failed or was disabled.
+DNS failed or was turned off.
 .It Cm frame_max
 Maximum frame size (bytes).
 .It Cm timeout
@@ -2302,7 +2357,7 @@ can take any value from the list that follows:
 .Bl -tag -width Ds
 .It Cm host
 Server hostname obtained via reverse DNS, or its IP address if reverse
-DNS failed or was disabled.
+DNS failed or was turned off.
 .It Cm port
 Server port.
 .It Cm peer_host
@@ -2493,6 +2548,7 @@ Reset stats database for all nodes in the cluster.
 .Xr rabbitmq-plugins 8 ,
 .Xr rabbitmq-server 8 ,
 .Xr rabbitmq-queues 8 ,
+.Xr rabbitmq-streams 8 ,
 .Xr rabbitmq-upgrade 8 ,
 .Xr rabbitmq-service 8 ,
 .Xr rabbitmq-env.conf 5 ,

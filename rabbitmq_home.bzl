@@ -10,22 +10,29 @@ RabbitmqHomeInfo = provider(
 )
 
 def _copy_script(ctx, script):
-    dest = ctx.actions.declare_file(path_join(ctx.label.name, "sbin", script.basename))
+    dest = ctx.actions.declare_file(
+        path_join(ctx.label.name, "sbin", script.basename),
+    )
     ctx.actions.expand_template(
         template = script,
         output = dest,
         substitutions = {},
+        is_executable = True,
     )
     return dest
 
-def link_escript(ctx, escript):
+def copy_escript(ctx, escript):
     e = ctx.attr._rabbitmqctl_escript.files_to_run.executable
-    s = ctx.actions.declare_file(path_join(ctx.label.name, "escript", escript))
-    ctx.actions.symlink(
-        output = s,
-        target_file = e,
+    dest = ctx.actions.declare_file(
+        path_join(ctx.label.name, "escript", escript.basename),
     )
-    return s
+    ctx.actions.run(
+        inputs = [e],
+        outputs = [dest],
+        executable = "cp",
+        arguments = [e.path, dest.path],
+    )
+    return dest
 
 def _plugins_dir_links(ctx, plugin):
     lib_info = plugin[ErlangAppInfo]
@@ -68,23 +75,11 @@ def _plugins_dir_links(ctx, plugin):
 
     return links
 
-def unique_versions(plugins):
-    erlang_versions = []
-    for plugin in plugins:
-        erlang_version = plugin[ErlangAppInfo].erlang_version
-        if not erlang_version in erlang_versions:
-            erlang_versions.append(erlang_version)
-    return erlang_versions
-
 def flatten(list_of_lists):
     return [item for sublist in list_of_lists for item in sublist]
 
 def _impl(ctx):
     plugins = flat_deps(ctx.attr.plugins)
-
-    erlang_versions = unique_versions(plugins)
-    if len(erlang_versions) > 1:
-        fail("plugins do not have a unified erlang version", erlang_versions)
 
     if not ctx.attr.is_windows:
         source_scripts = ctx.files._scripts
@@ -92,16 +87,7 @@ def _impl(ctx):
         source_scripts = ctx.files._scripts_windows
     scripts = [_copy_script(ctx, script) for script in source_scripts]
 
-    rabbitmq_ctl_copies = [
-        "rabbitmq-diagnostics",
-        "rabbitmq-plugins",
-        "rabbitmq-queues",
-        "rabbitmq-streams",
-        "rabbitmq-tanzu",
-        "rabbitmq-upgrade",
-        "rabbitmqctl",
-    ]
-    escripts = [link_escript(ctx, escript) for escript in rabbitmq_ctl_copies]
+    escripts = [copy_escript(ctx, escript) for escript in ctx.files._scripts]
 
     plugins = flatten([_plugins_dir_links(ctx, plugin) for plugin in plugins])
 
@@ -130,6 +116,9 @@ RABBITMQ_HOME_ATTRS = {
             "//deps/rabbit:scripts/rabbitmq-plugins",
             "//deps/rabbit:scripts/rabbitmq-queues",
             "//deps/rabbit:scripts/rabbitmq-server",
+            "//deps/rabbit:scripts/rabbitmq-streams",
+            "//deps/rabbit:scripts/rabbitmq-tanzu",
+            "//deps/rabbit:scripts/rabbitmq-upgrade",
             "//deps/rabbit:scripts/rabbitmqctl",
         ],
         allow_files = True,
@@ -142,6 +131,9 @@ RABBITMQ_HOME_ATTRS = {
             "//deps/rabbit:scripts/rabbitmq-plugins.bat",
             "//deps/rabbit:scripts/rabbitmq-queues.bat",
             "//deps/rabbit:scripts/rabbitmq-server.bat",
+            "//deps/rabbit:scripts/rabbitmq-streams.bat",
+            "//deps/rabbit:scripts/rabbitmq-tanzu.bat",
+            "//deps/rabbit:scripts/rabbitmq-upgrade.bat",
             "//deps/rabbit:scripts/rabbitmqctl.bat",
         ],
         allow_files = True,

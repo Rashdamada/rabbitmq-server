@@ -113,7 +113,7 @@ define PROJECT_ENV
 	    {vhost_restart_strategy, continue},
 	    %% {global, prefetch count}
 	    {default_consumer_prefetch, {false, 0}},
-		%% interval at which the channel can perform periodic actions
+		  %% interval at which the channel can perform periodic actions
 	    {channel_tick_interval, 60000},
 	    %% Default max message size is 128 MB
 	    {max_message_size, 134217728},
@@ -125,7 +125,10 @@ define PROJECT_ENV
       {track_auth_attempt_source, false},
 			{credentials_obfuscation_fallback_secret, <<"nocookie">>},
       {dead_letter_worker_consumer_prefetch, 32},
-      {dead_letter_worker_publisher_confirm_timeout, 180000}
+      {dead_letter_worker_publisher_confirm_timeout, 180000},
+
+			%% EOL date for the current release series, if known/announced
+			{release_series_eol_date, none}
 	  ]
 endef
 
@@ -145,9 +148,9 @@ TEST_DEPS = rabbitmq_ct_helpers rabbitmq_ct_client_helpers amqp_client meck prop
 PLT_APPS += mnesia
 
 dep_syslog = git https://github.com/schlagert/syslog 4.0.0
-dep_osiris = git https://github.com/rabbitmq/osiris main
+dep_osiris = git https://github.com/rabbitmq/osiris v1.4.2
 dep_systemd = hex 0.6.1
-dep_seshat = git https://github.com/rabbitmq/seshat main
+dep_seshat = hex 0.4.0
 
 define usage_xml_to_erl
 $(subst __,_,$(patsubst $(DOCS_DIR)/rabbitmq%.1.xml, src/rabbit_%_usage.erl, $(subst -,_,$(1))))
@@ -163,12 +166,6 @@ DEP_PLUGINS = rabbit_common/mk/rabbitmq-build.mk \
 	      rabbit_common/mk/rabbitmq-run.mk \
 	      rabbit_common/mk/rabbitmq-test.mk \
 	      rabbit_common/mk/rabbitmq-tools.mk
-
-# FIXME: Use erlang.mk patched for RabbitMQ, while waiting for PRs to be
-# reviewed and merged.
-
-ERLANG_MK_REPO = https://github.com/rabbitmq/erlang.mk.git
-ERLANG_MK_COMMIT = rabbitmq-tmp
 
 include ../../rabbitmq-components.mk
 include ../../erlang.mk
@@ -260,6 +257,10 @@ endif
 
 ifdef DEBUG_FF
 RMQ_ERLC_OPTS += -DDEBUG_QUORUM_QUEUE_FF=true
+endif
+
+ifdef TRACE_SUPERVISOR2
+RMQ_ERLC_OPTS += -DTRACE_SUPERVISOR2=true
 endif
 
 ifndef USE_PROPER_QC

@@ -50,24 +50,20 @@ groups() ->
                 basic_recover,
                 delete_immediately_by_resource
                ],
+    ExtraBccTests = [extra_bcc_option,
+                     extra_bcc_option_multiple_1,
+                     extra_bcc_option_multiple_2
+                    ],
     [
      {parallel_tests, [], [
        {classic_queue, [parallel], AllTests ++ [delete_immediately_by_pid_succeeds,
                                                 trigger_message_store_compaction]},
        {mirrored_queue, [parallel], AllTests ++ [delete_immediately_by_pid_succeeds,
                                                  trigger_message_store_compaction]},
-       {quorum_queue, [parallel], AllTests ++ [
-           delete_immediately_by_pid_fails,
-           extra_bcc_option,
-           extra_bcc_option_multiple
-       ]},
+       {quorum_queue, [parallel], AllTests ++ ExtraBccTests ++ [delete_immediately_by_pid_fails]},
        {quorum_queue_in_memory_limit, [parallel], AllTests ++ [delete_immediately_by_pid_fails]},
        {quorum_queue_in_memory_bytes, [parallel], AllTests ++ [delete_immediately_by_pid_fails]},
-       {stream_queue, [parallel], [publish,
-                                   subscribe,
-                                   extra_bcc_option,
-                                   extra_bcc_option_multiple]}
-
+       {stream_queue, [parallel], ExtraBccTests ++ [publish, subscribe]}
       ]}
     ].
 
@@ -94,40 +90,25 @@ init_per_group(classic_queue, Config) ->
        {consumer_args, []},
        {queue_durable, true}]);
 init_per_group(quorum_queue, Config) ->
-    case rabbit_ct_broker_helpers:enable_feature_flag(Config, quorum_queue) of
-        ok ->
-            rabbit_ct_helpers:set_config(
-              Config,
-              [{queue_args, [{<<"x-queue-type">>, longstr, <<"quorum">>}]},
-               {consumer_args, []},
-               {queue_durable, true}]);
-        Skip ->
-            Skip
-    end;
+    rabbit_ct_helpers:set_config(
+      Config,
+      [{queue_args, [{<<"x-queue-type">>, longstr, <<"quorum">>}]},
+       {consumer_args, []},
+       {queue_durable, true}]);
 init_per_group(quorum_queue_in_memory_limit, Config) ->
-    case rabbit_ct_broker_helpers:enable_feature_flag(Config, quorum_queue) of
-        ok ->
-            rabbit_ct_helpers:set_config(
-              Config,
-              [{queue_args, [{<<"x-queue-type">>, longstr, <<"quorum">>},
-                             {<<"x-max-in-memory-length">>, long, 1}]},
-               {consumer_args, []},
-               {queue_durable, true}]);
-        Skip ->
-            Skip
-    end;
+    rabbit_ct_helpers:set_config(
+      Config,
+      [{queue_args, [{<<"x-queue-type">>, longstr, <<"quorum">>},
+                     {<<"x-max-in-memory-length">>, long, 1}]},
+       {consumer_args, []},
+       {queue_durable, true}]);
 init_per_group(quorum_queue_in_memory_bytes, Config) ->
-    case rabbit_ct_broker_helpers:enable_feature_flag(Config, quorum_queue) of
-        ok ->
-            rabbit_ct_helpers:set_config(
-              Config,
-              [{queue_args, [{<<"x-queue-type">>, longstr, <<"quorum">>},
-                             {<<"x-max-in-memory-bytes">>, long, 1}]},
-               {consumer_args, []},
-               {queue_durable, true}]);
-        Skip ->
-            Skip
-    end;
+    rabbit_ct_helpers:set_config(
+      Config,
+      [{queue_args, [{<<"x-queue-type">>, longstr, <<"quorum">>},
+                     {<<"x-max-in-memory-bytes">>, long, 1}]},
+       {consumer_args, []},
+       {queue_durable, true}]);
 init_per_group(mirrored_queue, Config) ->
     rabbit_ct_broker_helpers:set_ha_policy(Config, 0, <<"^max_length.*queue">>,
         <<"all">>, [{<<"ha-sync-mode">>, <<"automatic">>}]),
@@ -179,7 +160,7 @@ end_per_group(Group, Config) ->
 
 init_per_testcase(Testcase, Config) ->
     Group = proplists:get_value(name, ?config(tc_group_properties, Config)),
-    Q = rabbit_data_coercion:to_binary(io_lib:format("~p_~p", [Group, Testcase])),
+    Q = rabbit_data_coercion:to_binary(io_lib:format("~p_~tp", [Group, Testcase])),
     Q2 = rabbit_data_coercion:to_binary(io_lib:format("~p_~p_2", [Group, Testcase])),
     Config1 = rabbit_ct_helpers:set_config(Config, [{queue_name, Q},
                                                     {queue_name_2, Q2}]),
@@ -688,11 +669,13 @@ delete_immediately_by_resource(Config) ->
 
 extra_bcc_option(Config) ->
     {_, Ch} = rabbit_ct_client_helpers:open_connection_and_channel(Config, 0),
-    QName = <<"a_queue_with_extra_bcc">>,
+    Name0 = ?FUNCTION_NAME,
+    Name = atom_to_binary(Name0),
+    QName = <<"queue_with_extra_bcc_", Name/binary>>,
     delete_queue(Ch, QName),
     declare_queue(Ch, Config, QName),
 
-    ExtraBCC = <<"extra.bcc">>,
+    ExtraBCC = <<"extra_bcc_", Name/binary>>,
     delete_queue(Ch, ExtraBCC),
     declare_bcc_queue(Ch, ExtraBCC),
     set_queue_options(Config, QName, #{
@@ -708,19 +691,22 @@ extra_bcc_option(Config) ->
 
 %% Test single message being routed to 2 target queues where 1 target queue
 %% has an extra BCC.
-extra_bcc_option_multiple(Config) ->
+extra_bcc_option_multiple_1(Config) ->
     {_, Ch} = rabbit_ct_client_helpers:open_connection_and_channel(Config, 0),
-    Exchange = <<"amq.fanout">>,
+    Name0 = ?FUNCTION_NAME,
+    Name = atom_to_binary(Name0),
+    Exchange = <<"fanout_", Name/binary>>,
+    declare_exchange(Ch, Exchange, <<"fanout">>),
 
-    QName1 = <<"queue_with_extra_bcc">>,
+    QName1 = <<"queue_with_extra_bcc_", Name/binary>>,
     declare_queue(Ch, Config, QName1),
     #'queue.bind_ok'{} = amqp_channel:call(
                            Ch, #'queue.bind'{queue = QName1,
                                              exchange = Exchange}),
-    ExtraBCC = <<"my_extra_bcc">>,
+    ExtraBCC = <<"extra_bcc_", Name/binary>>,
     declare_bcc_queue(Ch, ExtraBCC),
     set_queue_options(Config, QName1, #{extra_bcc => ExtraBCC}),
-    QName2 = <<"queue_without_extra_bcc">>,
+    QName2 = <<"queue_without_extra_bcc_", Name/binary>>,
     declare_queue(Ch, Config, QName2),
     #'queue.bind_ok'{} = amqp_channel:call(
                            Ch, #'queue.bind'{queue = QName2,
@@ -731,6 +717,40 @@ extra_bcc_option_multiple(Config) ->
     wait_for_messages(Config, [[QName2, <<"1">>, <<"1">>, <<"0">>]]),
     wait_for_messages(Config, [[ExtraBCC, <<"1">>, <<"1">>, <<"0">>]]),
 
+    delete_exchange(Ch, Exchange),
+    delete_queue(Ch, QName1),
+    delete_queue(Ch, QName2),
+    delete_queue(Ch, ExtraBCC).
+
+%% Test single message being routed to 2 target queues where both target queues
+%% have the same extra BCC.
+extra_bcc_option_multiple_2(Config) ->
+    {_, Ch} = rabbit_ct_client_helpers:open_connection_and_channel(Config, 0),
+    Name0 = ?FUNCTION_NAME,
+    Name = atom_to_binary(Name0),
+    Exchange = <<"fanout_", Name/binary>>,
+    declare_exchange(Ch, Exchange, <<"fanout">>),
+
+    ExtraBCC = <<"extra_bcc_", Name/binary>>,
+    declare_bcc_queue(Ch, ExtraBCC),
+
+    QName1 = <<"q1_with_extra_bcc_", Name/binary>>,
+    QName2 = <<"q2_with_extra_bcc_", Name/binary>>,
+    lists:foreach(
+      fun(QName) ->
+              declare_queue(Ch, Config, QName),
+              #'queue.bind_ok'{} = amqp_channel:call(
+                                     Ch, #'queue.bind'{queue = QName,
+                                                       exchange = Exchange}),
+              set_queue_options(Config, QName, #{extra_bcc => ExtraBCC})
+      end, [QName1, QName2]),
+
+    publish(Ch, <<"ignore">>, [<<"msg">>], Exchange),
+    wait_for_messages(Config, [[QName1, <<"1">>, <<"1">>, <<"0">>]]),
+    wait_for_messages(Config, [[QName2, <<"1">>, <<"1">>, <<"0">>]]),
+    wait_for_messages(Config, [[ExtraBCC, <<"1">>, <<"1">>, <<"0">>]]),
+
+    delete_exchange(Ch, Exchange),
     delete_queue(Ch, QName1),
     delete_queue(Ch, QName2),
     delete_queue(Ch, ExtraBCC).
@@ -738,6 +758,14 @@ extra_bcc_option_multiple(Config) ->
 %%%%%%%%%%%%%%%%%%%%%%%%
 %% Test helpers
 %%%%%%%%%%%%%%%%%%%%%%%%
+
+declare_exchange(Ch, Name, Type) ->
+    #'exchange.declare_ok'{} = amqp_channel:call(
+                                 Ch, #'exchange.declare'{exchange = Name,
+                                                         type     = Type
+                                                        }).
+delete_exchange(Ch, Name) ->
+    #'exchange.delete_ok'{} = amqp_channel:call(Ch, #'exchange.delete'{exchange = Name}).
 
 declare_queue(Ch, Config, QName) ->
     Args = ?config(queue_args, Config),

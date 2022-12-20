@@ -18,14 +18,6 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
--export([upgrade_recovery_terms/0, persistent_bytes/0]).
--export([open_global_table/0, close_global_table/0,
-         read_global/1, delete_global_table/0]).
--export([open_table/1, close_table/1]).
-
--rabbit_upgrade({upgrade_recovery_terms, local, []}).
--rabbit_upgrade({persistent_bytes, local, [upgrade_recovery_terms]}).
-
 -include_lib("rabbit_common/include/rabbit.hrl").
 
 %%----------------------------------------------------------------------------
@@ -35,7 +27,7 @@
 start(VHost) ->
     case rabbit_vhost_sup_sup:get_vhost_sup(VHost) of
       {ok, VHostSup} ->
-            {ok, _} = supervisor2:start_child(
+            {ok, _} = supervisor:start_child(
                         VHostSup,
                         {?MODULE,
                          {?MODULE, start_link, [VHost]},
@@ -44,7 +36,7 @@ start(VHost) ->
         %% we can get here if a vhost is added and removed concurrently
         %% e.g. some integration tests do it
         {error, {no_such_vhost, VHost}} ->
-            rabbit_log:error("Failed to start a recovery terms manager for vhost ~s: vhost no longer exists!",
+            rabbit_log:error("Failed to start a recovery terms manager for vhost ~ts: vhost no longer exists!",
                              [VHost])
     end,
     ok.
@@ -60,7 +52,7 @@ stop(VHost) ->
             end;
         %% see start/1
         {error, {no_such_vhost, VHost}} ->
-            rabbit_log:error("Failed to stop a recovery terms manager for vhost ~s: vhost no longer exists!",
+            rabbit_log:error("Failed to stop a recovery terms manager for vhost ~ts: vhost no longer exists!",
                              [VHost]),
 
             ok
@@ -86,7 +78,7 @@ clear(VHost) ->
         dets:delete_all_objects(VHost)
     %% see start/1
     catch _:badarg ->
-            rabbit_log:error("Failed to clear recovery terms for vhost ~s: table no longer exists!",
+            rabbit_log:error("Failed to clear recovery terms for vhost ~ts: table no longer exists!",
                              [VHost]),
             ok
     end,
@@ -94,74 +86,6 @@ clear(VHost) ->
 
 start_link(VHost) ->
     gen_server:start_link(?MODULE, [VHost], []).
-
-%%----------------------------------------------------------------------------
-
-upgrade_recovery_terms() ->
-    open_global_table(),
-    try
-        QueuesDir = filename:join(rabbit_mnesia:dir(), "queues"),
-        Dirs = case rabbit_file:list_dir(QueuesDir) of
-                   {ok, Entries} -> Entries;
-                   {error, _}    -> []
-               end,
-        [begin
-             File = filename:join([QueuesDir, Dir, "clean.dot"]),
-             case rabbit_file:read_term_file(File) of
-                 {ok, Terms} -> ok  = store_global_table(Dir, Terms);
-                 {error, _}  -> ok
-             end,
-             file:delete(File)
-         end || Dir <- Dirs],
-        ok
-    after
-        close_global_table()
-    end.
-
-persistent_bytes()      -> dets_upgrade(fun persistent_bytes/1).
-persistent_bytes(Props) -> Props ++ [{persistent_bytes, 0}].
-
-dets_upgrade(Fun)->
-    open_global_table(),
-    try
-        ok = dets:foldl(fun ({DirBaseName, Terms}, Acc) ->
-                                store_global_table(DirBaseName, Fun(Terms)),
-                                Acc
-                        end, ok, ?MODULE),
-        ok
-    after
-        close_global_table()
-    end.
-
-open_global_table() ->
-    File = filename:join(rabbit_mnesia:dir(), "recovery.dets"),
-    {ok, _} = dets:open_file(?MODULE, [{file,      File},
-                                       {ram_file,  true},
-                                       {auto_save, infinity}]),
-    ok.
-
-close_global_table() ->
-    try
-        dets:sync(?MODULE),
-        dets:close(?MODULE)
-    %% see clear/1
-    catch _:badarg ->
-            rabbit_log:error("Failed to clear global recovery terms: table no longer exists!",
-                             []),
-            ok
-    end.
-
-store_global_table(DirBaseName, Terms) ->
-    dets:insert(?MODULE, {DirBaseName, Terms}).
-
-read_global(DirBaseName) ->
-    case dets:lookup(?MODULE, DirBaseName) of
-        [{_, Terms}] -> {ok, Terms};
-        _            -> {error, not_found}
-    end.
-
-delete_global_table() ->
-    file:delete(filename:join(rabbit_mnesia:dir(), "recovery.dets")).
 
 %%----------------------------------------------------------------------------
 
@@ -207,7 +131,7 @@ open_table(VHost, RetriesLeft) ->
                     _ = file:delete(File),
                     %% Wait before retrying
                     DelayInMs = 1000,
-                    rabbit_log:warning("Failed to open a recovery terms DETS file at ~p. Will delete it and retry in ~p ms (~p retries left)",
+                    rabbit_log:warning("Failed to open a recovery terms DETS file at ~tp. Will delete it and retry in ~tp ms (~tp retries left)",
                                        [File, DelayInMs, RetriesLeft]),
                     timer:sleep(DelayInMs),
                     open_table(VHost, RetriesLeft - 1)
@@ -221,7 +145,7 @@ flush(VHost) ->
         dets:sync(VHost)
     %% see clear/1
     catch _:badarg ->
-            rabbit_log:error("Failed to sync recovery terms table for vhost ~s: the table no longer exists!",
+            rabbit_log:error("Failed to sync recovery terms table for vhost ~ts: the table no longer exists!",
                              [VHost]),
             ok
     end.
@@ -234,7 +158,7 @@ close_table(VHost) ->
         ok = dets:close(VHost)
     %% see clear/1
     catch _:badarg ->
-            rabbit_log:error("Failed to close recovery terms table for vhost ~s: the table no longer exists!",
+            rabbit_log:error("Failed to close recovery terms table for vhost ~ts: the table no longer exists!",
                              [VHost]),
             ok
     end.

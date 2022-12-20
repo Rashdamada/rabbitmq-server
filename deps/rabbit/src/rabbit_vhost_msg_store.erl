@@ -18,14 +18,14 @@ start(VHost, Type, ClientRefs, StartupFunState) when is_list(ClientRefs);
     case rabbit_vhost_sup_sup:get_vhost_sup(VHost) of
         {ok, VHostSup} ->
             VHostDir = rabbit_vhost:msg_store_dir_path(VHost),
-            supervisor2:start_child(VHostSup,
+            supervisor:start_child(VHostSup,
                                     {Type, {rabbit_msg_store, start_link,
                                             [VHost, Type, VHostDir, ClientRefs, StartupFunState]},
                                      transient, ?MSG_STORE_WORKER_WAIT, worker, [rabbit_msg_store]});
         %% we can get here if a vhost is added and removed concurrently
         %% e.g. some integration tests do it
         {error, {no_such_vhost, VHost}} = E ->
-            rabbit_log:error("Failed to start a message store for vhost ~s: vhost no longer exists!",
+            rabbit_log:error("Failed to start a message store for vhost ~ts: vhost no longer exists!",
                              [VHost]),
             E
     end.
@@ -33,11 +33,11 @@ start(VHost, Type, ClientRefs, StartupFunState) when is_list(ClientRefs);
 stop(VHost, Type) ->
     case rabbit_vhost_sup_sup:get_vhost_sup(VHost) of
         {ok, VHostSup} ->
-            ok = supervisor2:terminate_child(VHostSup, Type),
-            ok = supervisor2:delete_child(VHostSup, Type);
+            ok = supervisor:terminate_child(VHostSup, Type),
+            ok = supervisor:delete_child(VHostSup, Type);
         %% see start/4
         {error, {no_such_vhost, VHost}} ->
-            rabbit_log:error("Failed to stop a message store for vhost ~s: vhost no longer exists!",
+            rabbit_log:error("Failed to stop a message store for vhost ~ts: vhost no longer exists!",
                              [VHost]),
 
             ok
@@ -61,7 +61,7 @@ vhost_store_pid(VHost, Type) ->
         [] ->
             %% Fall back to using the supervisor (sometimes necessary on queue startup).
             {ok, VHostSup} = rabbit_vhost_sup_sup:get_vhost_sup(VHost),
-            case supervisor2:find_child(VHostSup, Type) of
+            case rabbit_misc:find_child(VHostSup, Type) of
                 [Pid] -> Pid;
                 []    -> no_pid
             end;

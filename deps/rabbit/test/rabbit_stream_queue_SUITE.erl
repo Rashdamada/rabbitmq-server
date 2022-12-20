@@ -54,7 +54,10 @@ groups() ->
            queue_size_on_declare,
            leader_locator_balanced,
            leader_locator_balanced_maintenance,
-           select_nodes_with_least_replicas
+           select_nodes_with_least_replicas,
+           recover_after_leader_and_coordinator_kill,
+           restart_stream,
+           rebalance
           ]},
      {cluster_size_3_1, [], [shrink_coordinator_cluster]},
      {cluster_size_3_2, [], [recover,
@@ -114,11 +117,14 @@ all_tests() ->
      max_age,
      invalid_policy,
      max_age_policy,
+     max_segment_size_bytes_validation,
      max_segment_size_bytes_policy,
+     max_segment_size_bytes_policy_validation,
      purge,
      update_retention_policy,
      queue_info,
-     tracking_status
+     tracking_status,
+     restart_stream
     ].
 
 %% -------------------------------------------------------------------
@@ -186,8 +192,6 @@ init_per_group1(Group, Config) ->
                     ok = rabbit_ct_broker_helpers:rpc(
                            Config2, 0, application, set_env,
                            [rabbit, channel_tick_interval, 100]),
-                    ok = rabbit_ct_broker_helpers:enable_feature_flag(
-                           Config2, maintenance_mode_status),
                     Config2;
                 {skip, _} = Skip ->
                     end_per_group(Group, Config2),
@@ -217,7 +221,8 @@ init_per_testcase(TestCase, Config)
 init_per_testcase(TestCase, Config)
   when TestCase == replica_recovery
        orelse TestCase == leader_failover
-       orelse TestCase == leader_failover_dedupe ->
+       orelse TestCase == leader_failover_dedupe
+       orelse TestCase == recover_after_leader_and_coordinator_kill ->
     case rabbit_ct_helpers:is_mixed_versions() of
         true ->
             %% not supported because of machine version difference
@@ -543,6 +548,8 @@ delete_last_replica(Config) ->
     ?assertEqual(ok,
                  rpc:call(Server0, rabbit_stream_queue, delete_replica,
                           [<<"/">>, Q, Server1])),
+
+    check_leader_and_replicas(Config, [Server0, Server2], members),
     ?assertEqual(ok,
                  rpc:call(Server0, rabbit_stream_queue, delete_replica,
                           [<<"/">>, Q, Server2])),
@@ -568,10 +575,25 @@ grow_coordinator_cluster(Config) ->
     ok = rabbit_control_helper:command(stop_app, Server1),
     ok = rabbit_control_helper:command(join_cluster, Server1, [atom_to_list(Server0)], []),
     rabbit_control_helper:command(start_app, Server1),
+    %% at this point there _probably_ won't be a stream coordinator member on
+    %% Server1
 
+    %% check we can add a new stream replica for the previously declare stream
+    ?assertEqual(ok,
+                 rpc:call(Server1, rabbit_stream_queue, add_replica,
+                          [<<"/">>, Q, Server1])),
+    %% also check we can declare a new stream when calling Server1
+    Q2 = unicode:characters_to_binary([Q, <<"_2">>]),
+    ChServer1 = rabbit_ct_client_helpers:open_channel(Config, Server1),
+    ?assertEqual({'queue.declare_ok', Q2, 0, 0},
+                 declare(ChServer1, Q2, [{<<"x-queue-type">>, longstr, <<"stream">>}])),
+
+    %% wait until the stream coordinator detects there is a new rabbit node
+    %% and adds a new member on the new node
     rabbit_ct_helpers:await_condition(
       fun() ->
-              case rpc:call(Server0, ra, members, [{rabbit_stream_coordinator, Server0}]) of
+              case rpc:call(Server0, ra, members,
+                            [{rabbit_stream_coordinator, Server0}]) of
                   {_, Members, _} ->
                       Nodes = lists:sort([N || {_, N} <- Members]),
                       lists:sort([Server0, Server1]) == Nodes;
@@ -586,6 +608,7 @@ shrink_coordinator_cluster(Config) ->
         rabbit_ct_broker_helpers:get_node_configs(Config, nodename),
     Ch = rabbit_ct_client_helpers:open_channel(Config, Server0),
     Q = ?config(queue_name, Config),
+
 
     ?assertEqual({'queue.declare_ok', Q, 0, 0},
                  declare(Ch, Q, [{<<"x-queue-type">>, longstr, <<"stream">>}])),
@@ -1112,6 +1135,43 @@ receive_basic_cancel_on_queue_deletion(Config) ->
             exit(timeout)
     end.
 
+recover_after_leader_and_coordinator_kill(Config) ->
+    [Server1 | _] = rabbit_ct_broker_helpers:get_node_configs(Config, nodename),
+    Ch1 = rabbit_ct_client_helpers:open_channel(Config, Server1),
+    Q = ?config(queue_name, Config),
+    ?assertEqual({'queue.declare_ok', Q, 0, 0},
+                 declare(Ch1, Q, [{<<"x-queue-type">>, longstr, <<"stream">>}])),
+
+    publish_confirm(Ch1, Q, [<<"msg 1">>]),
+
+    QName = rabbit_misc:r(<<"/">>, queue, Q),
+    [begin
+         Sleep = rand:uniform(10),
+         {ok, {_LeaderNode, LeaderPid}} = leader_info(Config),
+         {_, CoordNode} = get_stream_coordinator_leader(Config),
+         kill_stream_leader_then_coordinator_leader(Config, CoordNode,
+                                                    LeaderPid, Sleep),
+         publish_confirm(Ch1, Q, [<<"msg">>]),
+         recover_coordinator(Config, CoordNode),
+         timer:sleep(Sleep),
+         rabbit_ct_helpers:await_condition(
+           fun () ->
+                   rabbit_ct_broker_helpers:rpc(Config, 0, ?MODULE,
+                                                validate_writer_pid, [QName])
+           end)
+     end || _Num <- lists:seq(1, 10)],
+
+    {_, Node} = get_stream_coordinator_leader(Config),
+
+    CState = rabbit_ct_broker_helpers:rpc(Config, Node, sys,
+                                          get_state,
+                                          [rabbit_stream_coordinator]),
+
+
+    ct:pal("sys state ~p", [CState]),
+
+    ok.
+
 keep_consuming_on_leader_restart(Config) ->
     [Server1 | _] = rabbit_ct_broker_helpers:get_node_configs(Config, nodename),
 
@@ -1155,6 +1215,13 @@ leader_info(Config) ->
     rabbit_ct_broker_helpers:rpc(Config, 0, ?MODULE, get_leader_info,
                                  [QName]).
 
+validate_writer_pid(QName) ->
+    {ok, Q} = rabbit_amqqueue:lookup(QName),
+    MnesiaPid = amqqueue:get_pid(Q),
+    QState = amqqueue:get_type_state(Q),
+    #{name := StreamId} = QState,
+    {ok, MnesiaPid} == rabbit_stream_coordinator:writer_pid(StreamId).
+
 get_leader_info(QName) ->
     {ok, Q} = rabbit_amqqueue:lookup(QName),
     QState = amqqueue:get_type_state(Q),
@@ -1177,6 +1244,31 @@ kill_process(Config, Node, Pid) ->
 
 do_kill_process(Pid) ->
     exit(Pid, kill).
+
+do_stop_start_coordinator() ->
+    rabbit_stream_coordinator:stop(),
+    timer:sleep(10),
+    rabbit_stream_coordinator:recover().
+
+recover_coordinator(Config, Node) ->
+    rabbit_ct_broker_helpers:rpc(Config, Node, rabbit_stream_coordinator,
+                                 recover, []).
+
+get_stream_coordinator_leader(Config) ->
+    Node = hd(rabbit_ct_broker_helpers:get_node_configs(Config, nodename)),
+    rabbit_ct_broker_helpers:rpc(Config, Node, ra_leaderboard,
+                                 lookup_leader, [rabbit_stream_coordinator]).
+
+kill_stream_leader_then_coordinator_leader(Config, CoordLeaderNode,
+                                           StreamLeaderPid, Sleep) ->
+    rabbit_ct_broker_helpers:rpc(Config, CoordLeaderNode, ?MODULE,
+                                 do_stop_kill, [StreamLeaderPid, Sleep]).
+
+do_stop_kill(Pid, Sleep) ->
+    exit(Pid, kill),
+    timer:sleep(Sleep),
+    rabbit_stream_coordinator:stop().
+
 
 filter_consumers(Config, Server, CTag) ->
     CInfo = rabbit_ct_broker_helpers:rpc(Config, Server, ets, tab2list, [consumer_created]),
@@ -1254,7 +1346,8 @@ tracking_status(Config) ->
                  declare(Ch, Q, [{<<"x-queue-type">>, longstr, <<"stream">>}])),
 
     Vhost = ?config(rmq_vhost, Config),
-    ?assertEqual([], rabbit_ct_broker_helpers:rpc(Config, Server, rabbit_stream_queue, ?FUNCTION_NAME, [Vhost, Q])),
+    ?assertEqual([], rabbit_ct_broker_helpers:rpc(Config, Server, rabbit_stream_queue,
+                                                  ?FUNCTION_NAME, [Vhost, Q])),
     publish_confirm(Ch, Q, [<<"msg">>]),
     ?assertMatch([[
                    {type, sequence},
@@ -1263,6 +1356,37 @@ tracking_status(Config) ->
                   ]],
                  rabbit_ct_broker_helpers:rpc(Config, Server, rabbit_stream_queue, ?FUNCTION_NAME, [Vhost, Q])),
     rabbit_ct_broker_helpers:rpc(Config, Server, ?MODULE, delete_testcase_queue, [Q]).
+
+restart_stream(Config) ->
+    case rabbit_ct_broker_helpers:enable_feature_flag(Config, restart_stream) of
+        ok ->
+            [Server | _] = rabbit_ct_broker_helpers:get_node_configs(Config, nodename),
+
+            Ch = rabbit_ct_client_helpers:open_channel(Config, Server),
+            Q = ?config(queue_name, Config),
+            ?assertEqual({'queue.declare_ok', Q, 0, 0},
+                         declare(Ch, Q, [{<<"x-queue-type">>, longstr, <<"stream">>}])),
+
+            publish_confirm(Ch, Q, [<<"msg">>]),
+            Vhost = ?config(rmq_vhost, Config),
+            QName = #resource{virtual_host = Vhost,
+                              kind = queue,
+                              name = Q},
+            %% restart the stream
+            ?assertMatch({ok, _},
+                         rabbit_ct_broker_helpers:rpc(Config, Server,
+                                                      rabbit_stream_coordinator,
+                                                      ?FUNCTION_NAME, [QName])),
+
+            publish_confirm(Ch, Q, [<<"msg2">>]),
+            rabbit_ct_broker_helpers:rpc(Config, Server, ?MODULE, delete_testcase_queue, [Q]),
+            ok;
+        _ ->
+            ct:pal("skipping test ~s as feature flag `restart_stream` not supported",
+                   [?FUNCTION_NAME]),
+            ok
+    end.
+
 
 consume_from_last(Config) ->
     [Server | _] = rabbit_ct_broker_helpers:get_node_configs(Config, nodename),
@@ -1601,6 +1725,25 @@ max_length_bytes(Config) ->
     ?assert(length(receive_batch()) < 200),
     rabbit_ct_broker_helpers:rpc(Config, 0, ?MODULE, delete_testcase_queue, [Q]).
 
+max_segment_size_bytes_validation(Config) ->
+    [Server | _] = rabbit_ct_broker_helpers:get_node_configs(Config, nodename),
+
+    Ch = rabbit_ct_client_helpers:open_channel(Config, Server),
+    Q = ?config(queue_name, Config),
+    ?assertEqual({'queue.declare_ok', Q, 0, 0},
+                 declare(Ch, Q, [{<<"x-queue-type">>, longstr, <<"stream">>},
+                                 {<<"x-stream-max-segment-size-bytes">>, long, 10_000_000}])),
+
+    rabbit_ct_broker_helpers:rpc(Config, 0, ?MODULE, delete_testcase_queue, [Q]),
+
+    ?assertExit(
+       {{shutdown, {server_initiated_close, 406, _}}, _},
+       declare(Ch, Q, [{<<"x-queue-type">>, longstr, <<"stream">>},
+                       {<<"x-stream-max-segment-size-bytes">>, long, ?MAX_STREAM_MAX_SEGMENT_SIZE + 1_000}])),
+
+    rabbit_ct_broker_helpers:rpc(Config, 0, ?MODULE, delete_testcase_queue, [Q]).
+
+
 max_age(Config) ->
     [Server | _] = rabbit_ct_broker_helpers:get_node_configs(Config, nodename),
 
@@ -1705,7 +1848,7 @@ leader_failover_dedupe(Config) ->
     %% pick a random node order for this test
     %% realle we should run all permuations
     Nodes = lists:nth(rand:uniform(length(PermNodes)), PermNodes),
-    ct:pal("~s running with nodes ~w", [?FUNCTION_NAME, Nodes]),
+    ct:pal("~ts running with nodes ~w", [?FUNCTION_NAME, Nodes]),
     [_Server1, DownNode, PubNode] = Nodes,
     Ch1 = rabbit_ct_client_helpers:open_channel(Config, DownNode),
     Q = ?config(queue_name, Config),
@@ -1749,7 +1892,7 @@ leader_failover_dedupe(Config) ->
     rabbit_ct_helpers:await_condition(
       fun() ->
               Info = find_queue_info(Config, PubNode, [leader, members]),
-              ct:pal("info ~p", [Info]),
+              ct:pal("info ~tp", [Info]),
               NewLeader = proplists:get_value(leader, Info),
               NewLeader =/= DownNode
       end),
@@ -1807,9 +1950,11 @@ initial_cluster_size_two(Config) ->
 
 initial_cluster_size_one_policy(Config) ->
     [Server1 | _] = rabbit_ct_broker_helpers:get_node_configs(Config, nodename),
+    PolicyName = atom_to_binary(?FUNCTION_NAME),
 
     ok = rabbit_ct_broker_helpers:set_policy(
-           Config, 0, <<"cluster-size">>, <<"initial_cluster_size_one_policy">>, <<"queues">>,
+           Config, 0, PolicyName, <<"initial_cluster_size_one_policy">>,
+           <<"queues">>,
            [{<<"initial-cluster-size">>, 1}]),
 
     Ch = rabbit_ct_client_helpers:open_channel(Config, Server1),
@@ -1823,7 +1968,7 @@ initial_cluster_size_one_policy(Config) ->
     ?assertMatch(#'queue.delete_ok'{},
                  amqp_channel:call(Ch, #'queue.delete'{queue = Q})),
 
-    ok = rabbit_ct_broker_helpers:clear_policy(Config, 0, <<"cluster-size">>),
+    ok = rabbit_ct_broker_helpers:clear_policy(Config, 0, PolicyName),
     rabbit_ct_broker_helpers:rpc(Config, 0, ?MODULE, delete_testcase_queue, [Q]).
 
 declare_delete_same_stream(Config) ->
@@ -1963,8 +2108,10 @@ leader_locator_policy(Config) ->
     Bin = rabbit_data_coercion:to_binary(?FUNCTION_NAME),
     Q1 = <<Bin/binary, "_q1">>,
 
+    PolicyName = atom_to_binary(?FUNCTION_NAME),
+
     ok = rabbit_ct_broker_helpers:set_policy(
-           Config, 0, <<"my-leader-locator">>, Q, <<"queues">>,
+           Config, 0, PolicyName, Q, <<"queues">>,
            [{<<"queue-leader-locator">>, <<"balanced">>}]),
 
     ?assertEqual({'queue.declare_ok', Q1, 0, 0},
@@ -1974,14 +2121,14 @@ leader_locator_policy(Config) ->
                  declare(Ch, Q, [{<<"x-queue-type">>, longstr, <<"stream">>}])),
 
     Info = find_queue_info(Config, [policy, operator_policy, effective_policy_definition, leader]),
-    ?assertEqual(<<"my-leader-locator">>, proplists:get_value(policy, Info)),
+    ?assertEqual(PolicyName, proplists:get_value(policy, Info)),
     ?assertEqual('', proplists:get_value(operator_policy, Info)),
     ?assertEqual([{<<"queue-leader-locator">>, <<"balanced">>}],
                  proplists:get_value(effective_policy_definition, Info)),
     Leader = proplists:get_value(leader, Info),
     ?assert(lists:member(Leader, [Server2, Server3])),
 
-    ok = rabbit_ct_broker_helpers:clear_policy(Config, 0, <<"my-leader-locator">>),
+    ok = rabbit_ct_broker_helpers:clear_policy(Config, 0, PolicyName),
     rabbit_ct_broker_helpers:rpc(Config, 0, ?MODULE, delete_queues, [[Q1, Q]]).
 
 queue_size_on_declare(Config) ->
@@ -2050,24 +2197,26 @@ max_age_policy(Config) ->
     Q = ?config(queue_name, Config),
     ?assertEqual({'queue.declare_ok', Q, 0, 0},
                  declare(Ch, Q, [{<<"x-queue-type">>, longstr, <<"stream">>}])),
+    PolicyName = atom_to_binary(?FUNCTION_NAME),
 
     ok = rabbit_ct_broker_helpers:set_policy(
-           Config, 0, <<"age">>, <<"max_age_policy.*">>, <<"queues">>,
+           Config, 0, PolicyName, <<"max_age_policy.*">>, <<"queues">>,
            [{<<"max-age">>, <<"1Y">>}]),
 
     Info = find_queue_info(Config, [policy, operator_policy, effective_policy_definition]),
 
-    ?assertEqual(<<"age">>, proplists:get_value(policy, Info)),
+    ?assertEqual(PolicyName, proplists:get_value(policy, Info)),
     ?assertEqual('', proplists:get_value(operator_policy, Info)),
     ?assertEqual([{<<"max-age">>, <<"1Y">>}],
                  proplists:get_value(effective_policy_definition, Info)),
 
-    ok = rabbit_ct_broker_helpers:clear_policy(Config, 0, <<"age">>),
+    ok = rabbit_ct_broker_helpers:clear_policy(Config, 0, PolicyName),
     rabbit_ct_broker_helpers:rpc(Config, 0, ?MODULE, delete_testcase_queue, [Q]).
 
 update_retention_policy(Config) ->
     [Server | _] = Servers = rabbit_ct_broker_helpers:get_node_configs(Config, nodename),
 
+    PolicyName = atom_to_binary(?FUNCTION_NAME),
     Ch = rabbit_ct_client_helpers:open_channel(Config, Server),
     Q = ?config(queue_name, Config),
     ?assertEqual({'queue.declare_ok', Q, 0, 0},
@@ -2083,7 +2232,7 @@ update_retention_policy(Config) ->
                                             [rabbit_misc:r(<<"/">>, queue, Q)]),
     %% Don't use time based retention, it's really hard to get those tests right
     ok = rabbit_ct_broker_helpers:set_policy(
-           Config, 0, <<"retention">>, <<"update_retention_policy.*">>, <<"queues">>,
+           Config, 0, PolicyName, <<"update_retention_policy.*">>, <<"queues">>,
            [{<<"max-length-bytes">>, 10000}]),
     ensure_retention_applied(Config, Server),
 
@@ -2097,7 +2246,7 @@ update_retention_policy(Config) ->
     %% If there are changes only in the retention policy, processes should not be restarted
     ?assertEqual(amqqueue:get_pid(Q0), amqqueue:get_pid(Q1)),
 
-    ok = rabbit_ct_broker_helpers:clear_policy(Config, 0, <<"retention">>),
+    ok = rabbit_ct_broker_helpers:clear_policy(Config, 0, PolicyName),
     rabbit_ct_broker_helpers:rpc(Config, 0, ?MODULE, delete_testcase_queue, [Q]).
 
 queue_info(Config) ->
@@ -2117,24 +2266,50 @@ queue_info(Config) ->
       end),
     rabbit_ct_broker_helpers:rpc(Config, 0, ?MODULE, delete_testcase_queue, [Q]).
 
-max_segment_size_bytes_policy(Config) ->
-    [Server | _] = rabbit_ct_broker_helpers:get_node_configs(Config, nodename),
+max_segment_size_bytes_policy_validation(Config) ->
+    PolicyName = atom_to_binary(?FUNCTION_NAME),
+    Pattern = <<PolicyName/binary, ".*">>,
+    ok = rabbit_ct_broker_helpers:set_policy(
+           Config, 0, PolicyName, Pattern, <<"queues">>,
+           [{<<"stream-max-segment-size-bytes">>, ?MAX_STREAM_MAX_SEGMENT_SIZE - 1_000}]),
 
+    ok = rabbit_ct_broker_helpers:clear_policy(Config, 0, PolicyName),
+
+    {error_string, _} = rabbit_ct_broker_helpers:rpc(
+                          Config, 0,
+                          rabbit_policy, set,
+                          [<<"/">>,
+                            PolicyName,
+                            Pattern,
+                           [{<<"stream-max-segment-size-bytes">>,
+                             ?MAX_STREAM_MAX_SEGMENT_SIZE + 1_000}],
+                           0,
+                           <<"queues">>,
+                           <<"acting-user">>]),
+    ok.
+
+max_segment_size_bytes_policy(Config) ->
+    %% updating a policy for the segment size does not force a stream restart +
+    %% config update but will pick it up the next time a stream is restarted.
+    %% This is a limitation that we may want to address at some
+    %% point but for now we need to set the policy _before_ creating the stream.
+    PolicyName = atom_to_binary(?FUNCTION_NAME),
+    ok = rabbit_ct_broker_helpers:set_policy(
+           Config, 0, PolicyName, <<"max_segment_size_bytes.*">>, <<"queues">>,
+           [{<<"stream-max-segment-size-bytes">>, 5000}]),
+
+    [Server | _] = rabbit_ct_broker_helpers:get_node_configs(Config, nodename),
     Ch = rabbit_ct_client_helpers:open_channel(Config, Server),
     Q = ?config(queue_name, Config),
     ?assertEqual({'queue.declare_ok', Q, 0, 0},
                  declare(Ch, Q, [{<<"x-queue-type">>, longstr, <<"stream">>}])),
-    ok = rabbit_ct_broker_helpers:set_policy(
-           Config, 0, <<"segment">>, <<"max_segment_size_bytes.*">>, <<"queues">>,
-           [{<<"stream-max-segment-size-bytes">>, 5000}]),
-
     Info = find_queue_info(Config, [policy, operator_policy, effective_policy_definition]),
 
-    ?assertEqual(<<"segment">>, proplists:get_value(policy, Info)),
+    ?assertEqual(PolicyName, proplists:get_value(policy, Info)),
     ?assertEqual('', proplists:get_value(operator_policy, Info)),
     ?assertEqual([{<<"stream-max-segment-size-bytes">>, 5000}],
                  proplists:get_value(effective_policy_definition, Info)),
-    ok = rabbit_ct_broker_helpers:clear_policy(Config, 0, <<"segment">>),
+    ok = rabbit_ct_broker_helpers:clear_policy(Config, 0, PolicyName),
     rabbit_ct_broker_helpers:rpc(Config, 0, ?MODULE, delete_testcase_queue, [Q]).
 
 purge(Config) ->
@@ -2187,7 +2362,7 @@ check_leader_and_replicas(Config, Members, Tag) ->
     rabbit_ct_helpers:await_condition(
       fun() ->
               Info = find_queue_info(Config, [leader, Tag]),
-              ct:pal("~s members ~w ~p", [?FUNCTION_NAME, Members, Info]),
+              ct:pal("~ts members ~w ~tp", [?FUNCTION_NAME, Members, Info]),
               lists:member(proplists:get_value(leader, Info), Members)
                   andalso (lists:sort(Members) == lists:sort(proplists:get_value(Tag, Info)))
       end, 60_000).
@@ -2197,7 +2372,7 @@ check_members(Config, ExpectedMembers) ->
       fun () ->
               Info = find_queue_info(Config, 0, [members]),
               Members = proplists:get_value(members, Info),
-              ct:pal("~s members ~w ~p", [?FUNCTION_NAME, Members, Info]),
+              ct:pal("~ts members ~w ~tp", [?FUNCTION_NAME, Members, Info]),
               lists:sort(ExpectedMembers) == lists:sort(Members)
       end, 20_000).
 
@@ -2272,7 +2447,7 @@ receive_batch_min_offset(Ch, N, M) ->
             exit({unexpected_offset, S});
         {#'basic.deliver'{delivery_tag = DeliveryTag},
          #amqp_msg{props = #'P_basic'{headers = [{<<"x-stream-offset">>, long, S}]}}} ->
-            ct:pal("Committed offset is ~p but as first offset got ~p", [N, S]),
+            ct:pal("Committed offset is ~tp but as first offset got ~tp", [N, S]),
             ok = amqp_channel:cast(Ch, #'basic.ack'{delivery_tag = DeliveryTag,
                                                     multiple     = false}),
             receive_batch(Ch, S + 1, M)
@@ -2281,16 +2456,8 @@ receive_batch_min_offset(Ch, N, M) ->
               exit({missing_offset, N})
     end.
 
-receive_batch(Ch, N, N) ->
-    receive
-        {#'basic.deliver'{delivery_tag = DeliveryTag},
-         #amqp_msg{props = #'P_basic'{headers = [{<<"x-stream-offset">>, long, N}]}}} ->
-            ok = amqp_channel:cast(Ch, #'basic.ack'{delivery_tag = DeliveryTag,
-                                                    multiple     = false})
-    after 60000 ->
-              flush(),
-              exit({missing_offset, N})
-    end;
+receive_batch(_Ch, N, M) when N > M ->
+    ok;
 receive_batch(Ch, N, M) ->
     receive
         {_,
@@ -2331,7 +2498,7 @@ run_proper(Fun, Args, NumTests) ->
 flush() ->
     receive
         Any ->
-            ct:pal("flush ~p", [Any]),
+            ct:pal("flush ~tp", [Any]),
             flush()
     after 0 ->
               ok
@@ -2346,3 +2513,62 @@ ensure_retention_applied(Config, Server) ->
     %% Let's force a call on the retention gen_server, any pending retention would have been
     %% processed when this call returns.
     rabbit_ct_broker_helpers:rpc(Config, Server, gen_server, call, [osiris_retention, test]).
+
+rebalance(Config) ->
+    case rabbit_ct_broker_helpers:enable_feature_flag(Config, restart_stream) of
+        ok ->
+            rebalance0(Config);
+        _ ->
+            ct:pal("skipping test ~s as feature flag `restart_stream` not supported",
+                   [?FUNCTION_NAME]),
+            ok
+    end.
+
+rebalance0(Config) ->
+    [Server0 | _] =
+        rabbit_ct_broker_helpers:get_node_configs(Config, nodename),
+    Ch = rabbit_ct_client_helpers:open_channel(Config, Server0),
+
+    Q1 = <<"st1">>,
+    Q2 = <<"st2">>,
+    Q3 = <<"st3">>,
+    Q4 = <<"st4">>,
+    Q5 = <<"st5">>,
+
+    ?assertEqual({'queue.declare_ok', Q1, 0, 0},
+                 declare(Ch, Q1, [{<<"x-queue-type">>, longstr, <<"stream">>},
+                                 {<<"x-initial-cluster-size">>, long, 3}])),
+    ?assertEqual({'queue.declare_ok', Q2, 0, 0},
+                 declare(Ch, Q2, [{<<"x-queue-type">>, longstr, <<"stream">>},
+                                 {<<"x-initial-cluster-size">>, long, 3}])),
+    ?assertEqual({'queue.declare_ok', Q3, 0, 0},
+                 declare(Ch, Q3, [{<<"x-queue-type">>, longstr, <<"stream">>},
+                                 {<<"x-initial-cluster-size">>, long, 3}])),
+    ?assertEqual({'queue.declare_ok', Q4, 0, 0},
+                 declare(Ch, Q4, [{<<"x-queue-type">>, longstr, <<"stream">>},
+                                 {<<"x-initial-cluster-size">>, long, 3}])),
+    ?assertEqual({'queue.declare_ok', Q5, 0, 0},
+                 declare(Ch, Q5, [{<<"x-queue-type">>, longstr, <<"stream">>},
+                                 {<<"x-initial-cluster-size">>, long, 3}])),
+
+    NumMsgs = 100,
+    Data = crypto:strong_rand_bytes(100),
+    #'confirm.select_ok'{} = amqp_channel:call(Ch, #'confirm.select'{}),
+    amqp_channel:register_confirm_handler(Ch, self()),
+    [publish(Ch, Q1, Data) || _ <- lists:seq(1, NumMsgs)],
+    [publish(Ch, Q2, Data) || _ <- lists:seq(1, NumMsgs)],
+    [publish(Ch, Q3, Data) || _ <- lists:seq(1, NumMsgs)],
+    [publish(Ch, Q4, Data) || _ <- lists:seq(1, NumMsgs)],
+    [publish(Ch, Q5, Data) || _ <- lists:seq(1, NumMsgs)],
+
+    %% Check that we have at most 2 streams per node
+    ?awaitMatch(true,
+                begin
+                    {ok, Summary} = rpc:call(Server0, rabbit_amqqueue, rebalance, [stream, ".*", ".*"]),
+                    lists:all(fun(NodeData) ->
+                                      lists:all(fun({_, V}) when is_integer(V) -> V =< 2;
+                                                   (_) -> true end,
+                                                NodeData)
+                              end, Summary)
+                end, 10000),
+    ok.

@@ -7,20 +7,22 @@
 
 -module(rabbit_vhost).
 
+-include_lib("kernel/include/logger.hrl").
 -include_lib("rabbit_common/include/rabbit.hrl").
 -include("vhost.hrl").
 
 -export([recover/0, recover/1, read_config/1]).
--export([add/2, add/4, delete/2, exists/1, with/2, with_user_and_vhost/3, assert/1, update/2,
+-export([add/2, add/3, add/4, delete/2, exists/1, assert/1,
          set_limits/2, vhost_cluster_state/1, is_running_on_all_nodes/1, await_running_on_all_nodes/2,
         list/0, count/0, list_names/0, all/0, all_tagged_with/1]).
--export([parse_tags/1, update_metadata/2, tag_with/2, untag_from/2, update_tags/2, update_tags/3]).
--export([lookup/1]).
+-export([parse_tags/1, update_tags/3]).
+-export([lookup/1, default_name/0]).
 -export([info/1, info/2, info_all/0, info_all/1, info_all/2, info_all/3]).
 -export([dir/1, msg_store_dir_path/1, msg_store_dir_wildcard/0, config_file_path/1, ensure_config_file/1]).
 -export([delete_storage/1]).
 -export([vhost_down/1]).
--export([put_vhost/5]).
+-export([put_vhost/5,
+         put_vhost/6]).
 
 %%
 %% API
@@ -51,7 +53,7 @@ recover() ->
 
 recover(VHost) ->
     VHostDir = msg_store_dir_path(VHost),
-    rabbit_log:info("Making sure data directory '~ts' for vhost '~s' exists",
+    rabbit_log:info("Making sure data directory '~ts' for vhost '~ts' exists",
                     [VHostDir, VHost]),
     VHostStubFile = filename:join(VHostDir, ".vhost"),
     ok = rabbit_file:ensure_dir(VHostStubFile),
@@ -63,7 +65,7 @@ recover(VHost) ->
     {Time, ok} = timer:tc(fun() ->
                                   rabbit_binding:recover(rabbit_exchange:recover(VHost), QNames)
                           end),
-    rabbit_log:debug("rabbit_binding:recover/2 for vhost ~s completed in ~fs", [VHost, Time/1000000]),
+    rabbit_log:debug("rabbit_binding:recover/2 for vhost ~ts completed in ~fs", [VHost, Time/1000000]),
 
     ok = rabbit_amqqueue:start(Recovered),
     %% Start queue mirrors.
@@ -94,7 +96,7 @@ ensure_config_file(VHost) ->
                 _ ->
                     ?LEGACY_INDEX_SEGMENT_ENTRY_COUNT
             end,
-            rabbit_log:info("Setting segment_entry_count for vhost '~s' with ~b queues to '~b'",
+            rabbit_log:info("Setting segment_entry_count for vhost '~ts' with ~b queues to '~b'",
                             [VHost, length(QueueDirs), SegmentEntryCount]),
             file:write_file(Path, io_lib:format(
                 "%% This file is auto-generated! Edit at your own risk!~n"
@@ -123,8 +125,8 @@ parse_tags(<<"">>) ->
 parse_tags([]) ->
     [];
 parse_tags(Val) when is_binary(Val) ->
-    SVal = rabbit_data_coercion:to_list(Val),
-    [trim_tag(Tag) || Tag <- re:split(SVal, ",", [{return, list}])];
+    ValUnicode = rabbit_data_coercion:to_unicode_charlist(Val),
+    [trim_tag(Tag) || Tag <- re:split(ValUnicode, ",", [unicode, {return, list}])];
 parse_tags(Val) when is_list(Val) ->
     case hd(Val) of
       Bin when is_binary(Bin) ->
@@ -135,64 +137,135 @@ parse_tags(Val) when is_list(Val) ->
         [trim_tag(Tag) || Tag <- Val];
       Int when is_integer(Int) ->
         %% this is a string/charlist
-        [trim_tag(Tag) || Tag <- re:split(Val, ",", [{return, list}])]
+        ValUnicode = rabbit_data_coercion:to_unicode_charlist(Val),
+        [trim_tag(Tag) || Tag <- re:split(ValUnicode, ",", [unicode, {return, list}])]
     end.
 
--spec add(vhost:name(), rabbit_types:username()) -> rabbit_types:ok_or_error(any()).
+-spec default_limits(vhost:name()) -> proplists:proplist().
+default_limits(Name) ->
+    AllLimits = application:get_env(rabbit, default_limits, []),
+    VHostLimits = proplists:get_value(vhosts, AllLimits, []),
+    Match = lists:search(fun({_, Ss}) ->
+                                 RE = proplists:get_value(<<"pattern">>, Ss, ".*"),
+                                 re:run(Name, RE, [{capture, none}]) =:= match
+                         end, VHostLimits),
+    case Match of
+        {value, {_, Ss}} ->
+            proplists:delete(<<"pattern">>, Ss);
+        _ ->
+            []
+    end.
 
+-spec default_operator_policies(vhost:name()) ->
+    {binary(), binary(), proplists:proplist()} | not_found.
+default_operator_policies(Name) ->
+    AllPolicies = application:get_env(rabbit, default_policies, []),
+    OpPolicies = proplists:get_value(operator, AllPolicies, []),
+    Match = lists:search(fun({_, Ss}) ->
+                                 RE = proplists:get_value(<<"vhost-pattern">>, Ss, ".*"),
+                                 re:run(Name, RE, [{capture, none}]) =:= match
+                         end, OpPolicies),
+    case Match of
+        {value, {PolicyName, Ss}} ->
+            QPattern = proplists:get_value(<<"queue-pattern">>, Ss, ".*"),
+            Ss1 = proplists:delete(<<"queue-pattern">>, Ss),
+            Ss2 = proplists:delete(<<"vhost-pattern">>, Ss1),
+            {PolicyName, list_to_binary(QPattern), Ss2};
+        _ ->
+            not_found
+    end.
+
+-spec add(vhost:name(), rabbit_types:username()) ->
+    rabbit_types:ok_or_error(any()).
 add(VHost, ActingUser) ->
-    case exists(VHost) of
-        true  -> ok;
-        false -> do_add(VHost, <<"">>, [], ActingUser)
-    end.
+    add(VHost, #{}, ActingUser).
 
--spec add(vhost:name(), binary(), [atom()], rabbit_types:username()) -> rabbit_types:ok_or_error(any()).
-
+-spec add(vhost:name(), binary(), [atom()], rabbit_types:username()) ->
+    rabbit_types:ok_or_error(any()).
 add(Name, Description, Tags, ActingUser) ->
+    add(Name, #{description => Description,
+                tags => Tags}, ActingUser).
+
+-spec add(vhost:name(), vhost:metadata(), rabbit_types:username()) ->
+    rabbit_types:ok_or_error(any()).
+add(Name, Metadata, ActingUser) ->
     case exists(Name) of
         true  -> ok;
-        false -> do_add(Name, Description, Tags, ActingUser)
+        false ->
+            catch(do_add(Name, Metadata, ActingUser))
     end.
 
-do_add(Name, Description, Tags, ActingUser) ->
+do_add(Name, Metadata, ActingUser) ->
+    Description = maps:get(description, Metadata, undefined),
+    Tags = maps:get(tags, Metadata, []),
+
+    %% validate default_queue_type
+    case Metadata of
+        #{default_queue_type := DQT} ->
+            %% check that the queue type is known
+            try rabbit_queue_type:discover(DQT) of
+                _ ->
+                    case rabbit_queue_type:feature_flag_name(DQT) of
+                        undefined -> ok;
+                        Flag when is_atom(Flag) ->
+                            case rabbit_feature_flags:is_enabled(Flag) of
+                                true  -> ok;
+                                false -> throw({error, queue_type_feature_flag_is_not_enabled})
+                            end
+                    end
+            catch _:_ ->
+                      throw({error, invalid_queue_type})
+            end;
+        _ ->
+            ok
+    end,
+
     case Description of
         undefined ->
-            rabbit_log:info("Adding vhost '~s' without a description", [Name]);
-        Value ->
-            rabbit_log:info("Adding vhost '~s' (description: '~s', tags: ~p)", [Name, Value, Tags])
+            rabbit_log:info("Adding vhost '~ts' without a description", [Name]);
+        Description ->
+            rabbit_log:info("Adding vhost '~ts' (description: '~ts', tags: ~tp)",
+                            [Name, Description, Tags])
     end,
-    VHost = rabbit_misc:execute_mnesia_transaction(
-          fun () ->
-                  case mnesia:wread({rabbit_vhost, Name}) of
-                      [] ->
-                        Row = vhost:new(Name, [], #{description => Description, tags => Tags}),
-                        rabbit_log:debug("Inserting a virtual host record ~p", [Row]),
-                        ok = mnesia:write(rabbit_vhost, Row, write),
-                        Row;
-                      %% the vhost already exists
-                      [Row] ->
-                        Row
-                  end
-          end,
-          fun (VHost1, true) ->
-                  VHost1;
-              (VHost1, false) ->
-                  [begin
-                    Resource = rabbit_misc:r(Name, exchange, ExchangeName),
-                    rabbit_log:debug("Will declare an exchange ~p", [Resource]),
-                    _ = rabbit_exchange:declare(Resource, Type, true, false, Internal, [], ActingUser)
-                  end || {ExchangeName, Type, Internal} <-
-                          [{<<"">>,                   direct,  false},
-                           {<<"amq.direct">>,         direct,  false},
-                           {<<"amq.topic">>,          topic,   false},
-                           %% per 0-9-1 pdf
-                           {<<"amq.match">>,          headers, false},
-                           %% per 0-9-1 xml
-                           {<<"amq.headers">>,        headers, false},
-                           {<<"amq.fanout">>,         fanout,  false},
-                           {<<"amq.rabbitmq.trace">>, topic,   true}]],
-                  VHost1
-          end),
+    DefaultLimits = default_limits(Name),
+    {NewOrNot, VHost} = rabbit_db_vhost:create_or_get(Name, DefaultLimits, Metadata),
+    case NewOrNot of
+        new ->
+            rabbit_log:info("Inserted a virtual host record ~tp", [VHost]);
+        existing ->
+            ok
+    end,
+    case DefaultLimits of
+        [] ->
+            ok;
+        _  ->
+            ok = rabbit_vhost_limit:set(Name, DefaultLimits, ActingUser),
+            rabbit_log:info("Applied default limits to vhost '~tp': ~tp",
+                            [Name, DefaultLimits])
+    end,
+    case default_operator_policies(Name) of
+        not_found ->
+            ok;
+        {PolicyName, QPattern, Definition} = Policy ->
+            ok = rabbit_policy:set_op(Name, PolicyName, QPattern, Definition,
+                                undefined, undefined, ActingUser),
+            rabbit_log:info("Applied default operator policy to vhost '~tp': ~tp",
+                            [Name, Policy])
+    end,
+    [begin
+         Resource = rabbit_misc:r(Name, exchange, ExchangeName),
+         rabbit_log:debug("Will declare an exchange ~tp", [Resource]),
+         _ = rabbit_exchange:declare(Resource, Type, true, false, Internal, [], ActingUser)
+     end || {ExchangeName, Type, Internal} <-
+            [{<<"">>,                   direct,  false},
+             {<<"amq.direct">>,         direct,  false},
+             {<<"amq.topic">>,          topic,   false},
+             %% per 0-9-1 pdf
+             {<<"amq.match">>,          headers, false},
+             %% per 0-9-1 xml
+             {<<"amq.headers">>,        headers, false},
+             {<<"amq.fanout">>,         fanout,  false},
+             {<<"amq.rabbitmq.trace">>, topic,   true}]],
     case rabbit_vhost_sup_sup:start_on_all_nodes(Name) of
         ok ->
             rabbit_event:notify(vhost_created, info(VHost)
@@ -201,43 +274,42 @@ do_add(Name, Description, Tags, ActingUser) ->
                                     {tags, Tags}]),
             ok;
         {error, Reason} ->
-            Msg = rabbit_misc:format("failed to set up vhost '~s': ~p",
+            Msg = rabbit_misc:format("failed to set up vhost '~ts': ~tp",
                                      [Name, Reason]),
             {error, Msg}
     end.
 
 -spec update(vhost:name(), binary(), [atom()], rabbit_types:username()) -> rabbit_types:ok_or_error(any()).
 update(Name, Description, Tags, ActingUser) ->
-    rabbit_misc:execute_mnesia_transaction(
-          fun () ->
-                  case mnesia:wread({rabbit_vhost, Name}) of
-                      [] ->
-                          {error, {no_such_vhost, Name}};
-                      [VHost0] ->
-                          VHost = vhost:merge_metadata(VHost0, #{description => Description, tags => Tags}),
-                          rabbit_log:debug("Updating a virtual host record ~p", [VHost]),
-                          ok = mnesia:write(rabbit_vhost, VHost, write),
-                          rabbit_event:notify(vhost_updated, info(VHost)
-                                ++ [{user_who_performed_action, ActingUser},
-                                    {description, Description},
-                                    {tags, Tags}]),
-                          ok
-                  end
-          end).
-
+    Metadata = #{description => Description, tags => Tags},
+    case rabbit_db_vhost:merge_metadata(Name, Metadata) of
+        {ok, VHost} ->
+            rabbit_event:notify(
+              vhost_updated,
+              info(VHost) ++ [{user_who_performed_action, ActingUser},
+                              {description, Description},
+                              {tags, Tags}]),
+            ok;
+        {error, _} = Error ->
+            Error
+    end.
 
 -spec delete(vhost:name(), rabbit_types:username()) -> rabbit_types:ok_or_error(any()).
 
 delete(VHost, ActingUser) ->
     %% FIXME: We are forced to delete the queues and exchanges outside
     %% the TX below. Queue deletion involves sending messages to the queue
-    %% process, which in turn results in further mnesia actions and
+    %% process, which in turn results in further database actions and
     %% eventually the termination of that process. Exchange deletion causes
     %% notifications which must be sent outside the TX
-    rabbit_log:info("Deleting vhost '~s'", [VHost]),
+    rabbit_log:info("Deleting vhost '~ts'", [VHost]),
+    %% TODO: This code does a lot of "list resources, walk through the list to
+    %% delete each resource". This feature should be provided by each called
+    %% modules, like `rabbit_amqqueue:delete_all_for_vhost(VHost)'. These new
+    %% calls would be responsible for the atomicity, not this code.
     %% Clear the permissions first to prohibit new incoming connections when deleting a vhost
-    rabbit_misc:execute_mnesia_transaction(
-          with(VHost, fun () -> clear_permissions(VHost, ActingUser) end)),
+    rabbit_auth_backend_internal:clear_permissions_for_vhost(VHost, ActingUser),
+    rabbit_auth_backend_internal:clear_topic_permissions_for_vhost(VHost, ActingUser),
     QDelFun = fun (Q) -> rabbit_amqqueue:delete(Q, false, false, ActingUser) end,
     [begin
          Name = amqqueue:get_name(Q),
@@ -245,20 +317,27 @@ delete(VHost, ActingUser) ->
      end || Q <- rabbit_amqqueue:list(VHost)],
     [assert_benign(rabbit_exchange:delete(Name, false, ActingUser), ActingUser) ||
         #exchange{name = Name} <- rabbit_exchange:list(VHost)],
-    Funs = rabbit_misc:execute_mnesia_transaction(
-          with(VHost, fun () -> internal_delete(VHost, ActingUser) end)),
-    ok = rabbit_event:notify(vhost_deleted, [{name, VHost},
-                                             {user_who_performed_action, ActingUser}]),
-    [case Fun() of
-         ok                                  -> ok;
-         {error, {no_such_vhost, VHost}} -> ok
-     end || Fun <- Funs],
-    %% After vhost was deleted from mnesia DB, we try to stop vhost supervisors
-    %% on all the nodes.
+    _ = rabbit_runtime_parameters:clear_vhost(VHost, ActingUser),
+    _ = [rabbit_policy:delete(VHost, proplists:get_value(name, Info), ActingUser)
+         || Info <- rabbit_policy:list(VHost)],
+    case rabbit_db_vhost:delete(VHost) of
+        true ->
+            ok = rabbit_event:notify(
+                   vhost_deleted,
+                   [{name, VHost},
+                    {user_who_performed_action, ActingUser}]);
+        false ->
+            ok
+    end,
+    %% After vhost was deleted from the database, we try to stop vhost
+    %% supervisors on all the nodes.
     rabbit_vhost_sup_sup:delete_on_all_nodes(VHost),
     ok.
 
 put_vhost(Name, Description, Tags0, Trace, Username) ->
+    put_vhost(Name, Description, Tags0, undefined, Trace, Username).
+
+put_vhost(Name, Description, Tags0, DefaultQueueType, Trace, Username) ->
     Tags = case Tags0 of
       undefined   -> <<"">>;
       null        -> <<"">>;
@@ -267,21 +346,34 @@ put_vhost(Name, Description, Tags0, Trace, Username) ->
       Other       -> Other
     end,
     ParsedTags = parse_tags(Tags),
-    rabbit_log:debug("Parsed tags ~p to ~p", [Tags, ParsedTags]),
+    rabbit_log:debug("Parsed tags ~tp to ~tp", [Tags, ParsedTags]),
     Result = case exists(Name) of
-        true  ->
-            update(Name, Description, ParsedTags, Username);
-        false ->
-            add(Name, Description, ParsedTags, Username),
-             %% wait for up to 45 seconds for the vhost to initialise
-             %% on all nodes
-             case await_running_on_all_nodes(Name, 45000) of
-                 ok               ->
-                     maybe_grant_full_permissions(Name, Username);
-                 {error, timeout} ->
-                     {error, timeout}
-             end
-    end,
+                 true  ->
+                     update(Name, Description, ParsedTags, Username);
+                 false ->
+                     Metadata0 = #{description => Description,
+                                   tags => ParsedTags},
+                     Metadata = case DefaultQueueType of
+                                    undefined ->
+                                        Metadata0;
+                                    _ ->
+                                        Metadata0#{default_queue_type =>
+                                                       DefaultQueueType}
+                                end,
+                     case add(Name, Metadata, Username) of
+                         ok ->
+                             %% wait for up to 45 seconds for the vhost to initialise
+                             %% on all nodes
+                             case await_running_on_all_nodes(Name, 45000) of
+                                 ok               ->
+                                     maybe_grant_full_permissions(Name, Username);
+                                 {error, timeout} ->
+                                     {error, timeout}
+                             end;
+                         Err ->
+                             Err
+                     end
+             end,
     case Trace of
         true      -> rabbit_trace:start(Name);
         false     -> rabbit_trace:stop(Name);
@@ -351,16 +443,16 @@ vhost_down(VHost) ->
 
 delete_storage(VHost) ->
     VhostDir = msg_store_dir_path(VHost),
-    rabbit_log:info("Deleting message store directory for vhost '~s' at '~s'", [VHost, VhostDir]),
+    rabbit_log:info("Deleting message store directory for vhost '~ts' at '~ts'", [VHost, VhostDir]),
     %% Message store should be closed when vhost supervisor is closed.
     case rabbit_file:recursive_delete([VhostDir]) of
         ok                   -> ok;
         {error, {_, enoent}} ->
             %% a concurrent delete did the job for us
-            rabbit_log:warning("Tried to delete storage directories for vhost '~s', it failed with an ENOENT", [VHost]),
+            rabbit_log:warning("Tried to delete storage directories for vhost '~ts', it failed with an ENOENT", [VHost]),
             ok;
         Other                ->
-            rabbit_log:warning("Tried to delete storage directories for vhost '~s': ~p", [VHost, Other]),
+            rabbit_log:warning("Tried to delete storage directories for vhost '~ts': ~tp", [VHost, Other]),
             Other
     end.
 
@@ -369,36 +461,25 @@ assert_benign({ok, _}, _)            -> ok;
 assert_benign({ok, _, _}, _)         -> ok;
 assert_benign({error, not_found}, _) -> ok;
 assert_benign({error, {absent, Q, _}}, ActingUser) ->
-    %% Removing the mnesia entries here is safe. If/when the down node
+    %% Removing the database entries here is safe. If/when the down node
     %% restarts, it will clear out the on-disk storage of the queue.
     QName = amqqueue:get_name(Q),
     rabbit_amqqueue:internal_delete(QName, ActingUser).
 
-internal_delete(VHost, ActingUser) ->
-    Fs1 = [rabbit_runtime_parameters:clear(VHost,
-                                           proplists:get_value(component, Info),
-                                           proplists:get_value(name, Info),
-                                           ActingUser)
-     || Info <- rabbit_runtime_parameters:list(VHost)],
-    Fs2 = [rabbit_policy:delete(VHost, proplists:get_value(name, Info), ActingUser)
-           || Info <- rabbit_policy:list(VHost)],
-    ok = mnesia:delete({rabbit_vhost, VHost}),
-    Fs1 ++ Fs2.
-
 -spec exists(vhost:name()) -> boolean().
 
 exists(VHost) ->
-    mnesia:dirty_read({rabbit_vhost, VHost}) /= [].
+    rabbit_db_vhost:exists(VHost).
 
 -spec list_names() -> [vhost:name()].
-list_names() -> mnesia:dirty_all_keys(rabbit_vhost).
+list_names() -> rabbit_db_vhost:list().
 
 %% Exists for backwards compatibility, prefer list_names/0.
 -spec list() -> [vhost:name()].
 list() -> list_names().
 
 -spec all() -> [vhost:vhost()].
-all() -> mnesia:dirty_match_object(rabbit_vhost, vhost:pattern_match_all()).
+all() -> rabbit_db_vhost:get_all().
 
 -spec all_tagged_with(atom()) -> [vhost:vhost()].
 all_tagged_with(TagName) ->
@@ -416,27 +497,19 @@ all_tagged_with(TagName) ->
 count() ->
     length(list()).
 
+-spec default_name() -> vhost:name().
+default_name() ->
+    case application:get_env(default_vhost) of
+        {ok, Value} -> Value;
+        undefined   -> <<"/">>
+    end.
+
 -spec lookup(vhost:name()) -> vhost:vhost() | rabbit_types:ok_or_error(any()).
 lookup(VHostName) ->
     case rabbit_misc:dirty_read({rabbit_vhost, VHostName}) of
         {error, not_found} -> {error, {no_such_vhost, VHostName}};
         {ok, Record}       -> Record
     end.
-
--spec with(vhost:name(), rabbit_misc:thunk(A)) -> A.
-with(VHostName, Thunk) ->
-    fun () ->
-        case mnesia:read({rabbit_vhost, VHostName}) of
-            []   -> mnesia:abort({no_such_vhost, VHostName});
-            [_V] -> Thunk()
-        end
-    end.
-
--spec with_user_and_vhost(rabbit_types:username(), vhost:name(), rabbit_misc:thunk(A)) -> A.
-with_user_and_vhost(Username, VHostName, Thunk) ->
-    rabbit_misc:with_user(Username, with(VHostName, Thunk)).
-
-%% Like with/2 but outside an Mnesia tx
 
 -spec assert(vhost:name()) -> 'ok'.
 assert(VHostName) ->
@@ -445,68 +518,27 @@ assert(VHostName) ->
         false -> throw({error, {no_such_vhost, VHostName}})
     end.
 
--spec update(vhost:name(), fun((vhost:vhost()) -> vhost:vhost())) -> vhost:vhost().
-update(VHostName, Fun) ->
-    case mnesia:read({rabbit_vhost, VHostName}) of
-        [] ->
-            mnesia:abort({no_such_vhost, VHostName});
-        [V] ->
-            V1 = Fun(V),
-            ok = mnesia:write(rabbit_vhost, V1, write),
-            V1
-    end.
-
--spec update_metadata(vhost:name(), fun((map())-> map())) -> vhost:vhost() | rabbit_types:ok_or_error(any()).
-update_metadata(VHostName, Fun) ->
-    update(VHostName, fun(Record) ->
-        Meta = Fun(vhost:get_metadata(Record)),
-        vhost:set_metadata(Record, Meta)
-    end).
-
--spec update_tags(vhost:name(), [vhost_tag()], rabbit_types:username()) -> vhost:vhost() | rabbit_types:ok_or_error(any()).
+-spec update_tags(vhost:name(), [vhost_tag()], rabbit_types:username()) -> vhost:vhost().
 update_tags(VHostName, Tags, ActingUser) ->
-    ConvertedTags = [rabbit_data_coercion:to_atom(I) || I <- Tags],
     try
-        R = rabbit_misc:execute_mnesia_transaction(fun() ->
-            update_tags(VHostName, ConvertedTags)
-        end),
-        rabbit_log:info("Successfully set tags for virtual host '~s' to ~p", [VHostName, ConvertedTags]),
+        VHost = rabbit_db_vhost:set_tags(VHostName, Tags),
+        ConvertedTags = vhost:get_tags(VHost),
+        rabbit_log:info("Successfully set tags for virtual host '~ts' to ~tp", [VHostName, ConvertedTags]),
         rabbit_event:notify(vhost_tags_set, [{name, VHostName},
                                              {tags, ConvertedTags},
                                              {user_who_performed_action, ActingUser}]),
-        R
+        VHost
     catch
         throw:{error, {no_such_vhost, _}} = Error ->
-            rabbit_log:warning("Failed to set tags for virtual host '~s': the virtual host does not exist", [VHostName]),
+            rabbit_log:warning("Failed to set tags for virtual host '~ts': the virtual host does not exist", [VHostName]),
             throw(Error);
         throw:Error ->
-            rabbit_log:warning("Failed to set tags for virtual host '~s': ~p", [VHostName, Error]),
+            rabbit_log:warning("Failed to set tags for virtual host '~ts': ~tp", [VHostName, Error]),
             throw(Error);
         exit:Error ->
-            rabbit_log:warning("Failed to set tags for virtual host '~s': ~p", [VHostName, Error]),
+            rabbit_log:warning("Failed to set tags for virtual host '~ts': ~tp", [VHostName, Error]),
             exit(Error)
     end.
-
--spec update_tags(vhost:name(), [vhost_tag()]) -> vhost:vhost() | rabbit_types:ok_or_error(any()).
-update_tags(VHostName, Tags) ->
-    ConvertedTags = [rabbit_data_coercion:to_atom(I) || I <- Tags],
-    update(VHostName, fun(Record) ->
-        Meta0 = vhost:get_metadata(Record),
-        Meta  = maps:update(tags, ConvertedTags, Meta0),
-        vhost:set_metadata(Record, Meta)
-    end).
-
--spec tag_with(vhost:name(), [atom()]) -> vhost:vhost() | rabbit_types:ok_or_error(any()).
-tag_with(VHostName, Tags) when is_list(Tags) ->
-    update_metadata(VHostName, fun(#{tags := Tags0} = Meta) ->
-        maps:update(tags, lists:usort(Tags0 ++ Tags), Meta)
-    end).
-
--spec untag_from(vhost:name(), [atom()]) -> vhost:vhost() | rabbit_types:ok_or_error(any()).
-untag_from(VHostName, Tags) when is_list(Tags) ->
-    update_metadata(VHostName, fun(#{tags := Tags0} = Meta) ->
-        maps:update(tags, lists:usort(Tags0 -- Tags), Meta)
-    end).
 
 set_limits(VHost, undefined) ->
     vhost:set_limits(VHost, []);
@@ -526,7 +558,7 @@ msg_store_dir_wildcard() ->
     rabbit_data_coercion:to_list(filename:join([msg_store_dir_base(), "*"])).
 
 msg_store_dir_base() ->
-    Dir = rabbit_mnesia:dir(),
+    Dir = rabbit:data_dir(),
     filename:join([Dir, "msg_stores", "vhosts"]).
 
 config_file_path(VHost) ->
@@ -534,8 +566,13 @@ config_file_path(VHost) ->
     filename:join(VHostDir, ".config").
 
 -spec trim_tag(list() | binary() | atom()) -> atom().
-trim_tag(Val) ->
-    rabbit_data_coercion:to_atom(string:trim(rabbit_data_coercion:to_list(Val))).
+trim_tag(Val) when is_atom(Val) ->
+    trim_tag(rabbit_data_coercion:to_binary(Val));
+trim_tag(Val) when is_list(Val) ->
+    trim_tag(rabbit_data_coercion:to_utf8_binary(Val));
+trim_tag(Val) when is_binary(Val) ->
+    ValTrimmed = string:trim(Val),
+    rabbit_data_coercion:to_atom(ValTrimmed).
 
 %%----------------------------------------------------------------------------
 
@@ -546,9 +583,10 @@ i(tracing, VHost) -> rabbit_trace:enabled(vhost:get_name(VHost));
 i(cluster_state, VHost) -> vhost_cluster_state(vhost:get_name(VHost));
 i(description, VHost) -> vhost:get_description(VHost);
 i(tags, VHost) -> vhost:get_tags(VHost);
+i(default_queue_type, VHost) -> vhost:get_default_queue_type(VHost);
 i(metadata, VHost) -> vhost:get_metadata(VHost);
 i(Item, VHost)     ->
-  rabbit_log:error("Don't know how to compute a virtual host info item '~s' for virtual host '~p'", [Item, VHost]),
+  rabbit_log:error("Don't know how to compute a virtual host info item '~ts' for virtual host '~tp'", [Item, VHost]),
   throw({bad_argument, Item}).
 
 -spec info(vhost:vhost() | vhost:name()) -> rabbit_types:infos().
@@ -556,9 +594,9 @@ i(Item, VHost)     ->
 info(VHost) when ?is_vhost(VHost) ->
     infos(?INFO_KEYS, VHost);
 info(Key) ->
-    case mnesia:dirty_read({rabbit_vhost, Key}) of
-        [] -> [];
-        [VHost] -> infos(?INFO_KEYS, VHost)
+    case rabbit_db_vhost:get(Key) of
+        undefined -> [];
+        VHost     -> infos(?INFO_KEYS, VHost)
     end.
 
 -spec info(vhost:vhost(), rabbit_types:info_keys()) -> rabbit_types:infos().
@@ -576,13 +614,3 @@ info_all(Ref, AggregatorPid)        -> info_all(?INFO_KEYS, Ref, AggregatorPid).
 info_all(Items, Ref, AggregatorPid) ->
     rabbit_control_misc:emitting_map(
        AggregatorPid, Ref, fun(VHost) -> info(VHost, Items) end, all()).
-
-
-clear_permissions(VHost, ActingUser) ->
-    [ok = rabbit_auth_backend_internal:clear_permissions(
-            proplists:get_value(user, Info), VHost, ActingUser)
-     || Info <- rabbit_auth_backend_internal:list_vhost_permissions(VHost)],
-    TopicPermissions = rabbit_auth_backend_internal:list_vhost_topic_permissions(VHost),
-    [ok = rabbit_auth_backend_internal:clear_topic_permissions(
-        proplists:get_value(user, TopicPermission), VHost, ActingUser)
-     || TopicPermission <- TopicPermissions].

@@ -169,7 +169,6 @@ init_per_group(aggregated_metrics, Config0) ->
         [{rabbit, [{collect_statistics, coarse}, {collect_statistics_interval, 100}]}]
     ),
     Config2 = init_per_group(aggregated_metrics, Config1, []),
-    ok = rabbit_ct_broker_helpers:enable_feature_flag(Config2, quorum_queue),
 
     A = rabbit_ct_broker_helpers:get_node_config(Config2, 0, nodename),
     Ch = rabbit_ct_client_helpers:open_channel(Config2, A),
@@ -275,7 +274,7 @@ get_test(Config) ->
     %% Check that the body looks like a valid response
     ?assertEqual(match, re:run(Body, "TYPE", [{capture, none}])),
     Port = rabbit_mgmt_test_util:config_port(Config, tcp_port_prometheus),
-    URI = lists:flatten(io_lib:format("http://localhost:~p/metricsooops", [Port])),
+    URI = lists:flatten(io_lib:format("http://localhost:~tp/metricsooops", [Port])),
     {ok, {{_, CodeAct, _}, _, _}} = httpc:request(get, {URI, []}, ?HTTPC_OPTS, []),
     ?assertMatch(404, CodeAct).
 
@@ -468,11 +467,11 @@ queue_coarse_metrics_per_object_test(Config) ->
 
 queue_metrics_per_object_test(Config) ->
     Expected1 =  #{#{queue => "vhost-1-queue-with-consumer", vhost => "vhost-1"} => [7],
-                   #{queue => "vhost-1-queue-with-messages", vhost => "vhost-1"} => [7]},
+                   #{queue => "vhost-1-queue-with-messages", vhost => "vhost-1"} => [1]},
     Expected2 =  #{#{queue => "vhost-2-queue-with-consumer", vhost => "vhost-2"} => [11],
-                   #{queue => "vhost-2-queue-with-messages", vhost => "vhost-2"} => [11]},
+                   #{queue => "vhost-2-queue-with-messages", vhost => "vhost-2"} => [1]},
     ExpectedD =  #{#{queue => "default-queue-with-consumer", vhost => "/"} => [3],
-                   #{queue => "default-queue-with-messages", vhost => "/"} => [3]},
+                   #{queue => "default-queue-with-messages", vhost => "/"} => [1]},
     {_, Body1} = http_get_with_pal(Config, "/metrics/detailed?vhost=vhost-1&family=queue_metrics", [], 200),
     ?assertEqual(Expected1,
                  map_get(rabbitmq_detailed_queue_messages_ram, parse_response(Body1))),
@@ -550,7 +549,7 @@ http_get(Config, ReqHeaders, CodeExp) ->
 
 http_get(Config, Path, ReqHeaders, CodeExp) ->
     Port = rabbit_mgmt_test_util:config_port(Config, tcp_port_prometheus),
-    URI = lists:flatten(io_lib:format("http://localhost:~p~s", [Port, Path])),
+    URI = lists:flatten(io_lib:format("http://localhost:~tp~ts", [Port, Path])),
     {ok, {{_HTTP, CodeAct, _}, Headers, Body}} =
         httpc:request(get, {URI, ReqHeaders}, ?HTTPC_OPTS, []),
     ?assertMatch(CodeExp, CodeAct),

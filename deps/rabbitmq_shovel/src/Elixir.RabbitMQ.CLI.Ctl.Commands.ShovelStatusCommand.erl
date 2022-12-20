@@ -11,8 +11,6 @@
 
 -behaviour('Elixir.RabbitMQ.CLI.CommandBehaviour').
 
--ignore_xref({'Elixir.RabbitMQ.CLI.DefaultOutput', output, 1}).
-
 -export([
          usage/0,
          usage_doc_guides/0,
@@ -103,8 +101,8 @@ fmt_ts({{YY, MM, DD}, {Hour, Min, Sec}}) ->
       io_lib:format("~4..0w-~2..0w-~2..0w ~2..0w:~2..0w:~2..0w",
                     [YY, MM, DD, Hour, Min, Sec])).
 
-fmt_status({'running' = St, Proplist}, Map) ->
-    maps:merge(Map#{state => St,
+fmt_status({'running', Proplist}, Map) ->
+    maps:merge(Map#{state => proplists:get_value(blocked_status, Proplist, running),
                     source_protocol => proplists:get_value(src_protocol, Proplist,
                                                            undefined),
                     source => proplists:get_value(src_uri, Proplist),
@@ -118,7 +116,7 @@ fmt_status('starting' = St, Map) ->
          termination_reason => <<>>};
 fmt_status({'terminated' = St, Reason}, Map) ->
     Map#{state => St,
-         termination_reason => list_to_binary(io_lib:format("~p", [Reason])),
+         termination_reason => list_to_binary(io_lib:format("~tp", [Reason])),
          source => <<>>,
          destination => <<>>}.
 

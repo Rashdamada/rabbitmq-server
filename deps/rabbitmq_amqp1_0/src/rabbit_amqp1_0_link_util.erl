@@ -14,14 +14,11 @@
 
 -define(EXCHANGE_SUB_LIFETIME, "delete-on-close").
 -define(DEFAULT_OUTCOME, #'v1_0.released'{}).
--define(SUPPORTED_OUTCOMES, [?V_1_0_SYMBOL_ACCEPTED,
-                             ?V_1_0_SYMBOL_REJECTED,
-                             ?V_1_0_SYMBOL_RELEASED]).
-
 -define(OUTCOMES, [?V_1_0_SYMBOL_ACCEPTED,
                    ?V_1_0_SYMBOL_REJECTED,
                    ?V_1_0_SYMBOL_RELEASED,
                    ?V_1_0_SYMBOL_MODIFIED]).
+-define(SUPPORTED_OUTCOMES, ?OUTCOMES).
 
 outcomes(Source) ->
     {DefaultOutcome, Outcomes} =
@@ -39,7 +36,7 @@ outcomes(Source) ->
                           {array, symbol, Syms} -> Syms;
                           Bad1         -> rabbit_amqp1_0_util:protocol_error(
                                             ?V_1_0_AMQP_ERROR_NOT_IMPLEMENTED,
-                                            "Outcomes not supported: ~p",
+                                            "Outcomes not supported: ~tp",
                                             [Bad1])
                       end,
                 {DO1, Os1};
@@ -50,7 +47,7 @@ outcomes(Source) ->
         []  -> {DefaultOutcome, {array, symbol, Outcomes}};
         Bad -> rabbit_amqp1_0_util:protocol_error(
                  ?V_1_0_AMQP_ERROR_NOT_IMPLEMENTED,
-                 "Outcomes not supported: ~p", [Bad])
+                 "Outcomes not supported: ~tp", [Bad])
     end.
 
 handle_to_ctag({uint, H}) ->

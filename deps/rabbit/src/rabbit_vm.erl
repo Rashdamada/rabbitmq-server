@@ -183,16 +183,7 @@ interesting_sups() ->
 queue_sups() ->
     all_vhosts_children(rabbit_amqqueue_sup_sup).
 
-quorum_sups() ->
-    %% TODO: in the future not all ra servers may be queues and we needs
-    %% some way to filter this
-    case whereis(ra_server_sup_sup) of
-        undefined ->
-            [];
-        _ ->
-            [Pid || {_, Pid, _, _} <-
-                    supervisor:which_children(ra_server_sup_sup)]
-    end.
+quorum_sups() -> [ra_server_sup_sup].
 
 dlx_sups() -> [rabbit_fifo_dlx_sup].
 stream_server_sups() -> [osiris_server_sup].
@@ -209,11 +200,11 @@ all_vhosts_children(Name) ->
         Pid when is_pid(Pid) ->
             lists:filtermap(
                 fun({_, VHostSupWrapper, _, _}) ->
-                    case supervisor2:find_child(VHostSupWrapper,
+                    case rabbit_misc:find_child(VHostSupWrapper,
                                                 rabbit_vhost_sup) of
                         []         -> false;
                         [VHostSup] ->
-                            case supervisor2:find_child(VHostSup, Name) of
+                            case rabbit_misc:find_child(VHostSup, Name) of
                                 [QSup] -> {true, QSup};
                                 []     -> false
                             end

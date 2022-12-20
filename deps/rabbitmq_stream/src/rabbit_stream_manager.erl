@@ -33,6 +33,7 @@
          delete_super_stream/3,
          lookup_leader/2,
          lookup_local_member/2,
+         lookup_member/2,
          topology/2,
          route/3,
          partitions/2,
@@ -99,6 +100,12 @@ lookup_leader(VirtualHost, Stream) ->
                              {error, not_available}.
 lookup_local_member(VirtualHost, Stream) ->
     gen_server:call(?MODULE, {lookup_local_member, VirtualHost, Stream}).
+
+-spec lookup_member(binary(), binary()) ->
+                       {ok, pid()} | {error, not_found} |
+                       {error, not_available}.
+lookup_member(VirtualHost, Stream) ->
+    gen_server:call(?MODULE, {lookup_member, VirtualHost, Stream}).
 
 -spec topology(binary(), binary()) ->
                   {ok,
@@ -176,7 +183,9 @@ validate_stream_queue_arguments([{<<"x-initial-cluster-size">>, long,
 validate_stream_queue_arguments([{<<"x-queue-leader-locator">>,
                                   longstr, Locator}
                                  | T]) ->
-    case lists:member(Locator, rabbit_queue_location:queue_leader_locators()) of
+    case lists:member(Locator,
+                      rabbit_queue_location:queue_leader_locators())
+    of
         true ->
             validate_stream_queue_arguments(T);
         false ->
@@ -184,6 +193,14 @@ validate_stream_queue_arguments([{<<"x-queue-leader-locator">>,
     end;
 validate_stream_queue_arguments([_ | T]) ->
     validate_stream_queue_arguments(T).
+
+default_super_stream_arguments(Arguments) ->
+    case Arguments of
+        #{<<"queue-leader-locator">> := _} ->
+            Arguments;
+        _ ->
+            Arguments#{<<"queue-leader-locator">> => <<"balanced">>}
+    end.
 
 handle_call({create, VirtualHost, Reference, Arguments, Username},
             _From, State) ->
@@ -213,9 +230,11 @@ handle_call({create_super_stream,
                          end],
                     QueueCreationsResult =
                         lists:foldl(fun (Partition, {ok, RollbackOps}) ->
+                                            Args =
+                                                default_super_stream_arguments(Arguments),
                                             case create_stream(VirtualHost,
                                                                Partition,
-                                                               Arguments,
+                                                               Args,
                                                                Username)
                                             of
                                                 {ok, _} ->
@@ -269,7 +288,7 @@ handle_call({delete_super_stream, VirtualHost, SuperStream, Username},
                 ok ->
                     ok;
                 {error, Error} ->
-                    rabbit_log:warning("Error while deleting super stream exchange ~p, ~p",
+                    rabbit_log:warning("Error while deleting super stream exchange ~tp, ~tp",
                                        [SuperStream, Error]),
                     ok
             end,
@@ -278,8 +297,8 @@ handle_call({delete_super_stream, VirtualHost, SuperStream, Username},
                      {ok, deleted} ->
                          ok;
                      {error, Err} ->
-                         rabbit_log:warning("Error while delete partition ~p of super stream "
-                                            "~p, ~p",
+                         rabbit_log:warning("Error while delete partition ~tp of super stream "
+                                            "~tp, ~tp",
                                             [Stream, SuperStream, Err]),
                          ok
                  end
@@ -290,119 +309,109 @@ handle_call({delete_super_stream, VirtualHost, SuperStream, Username},
             {reply, {error, Error}, State}
     end;
 handle_call({lookup_leader, VirtualHost, Stream}, _From, State) ->
-    Name =
-        #resource{virtual_host = VirtualHost,
-                  kind = queue,
-                  name = Stream},
-    Res = case rabbit_amqqueue:lookup(Name) of
+    Res = case lookup_stream(VirtualHost, Stream) of
               {ok, Q} ->
-                  case is_stream_queue(Q) of
+                  LeaderPid = amqqueue:get_pid(Q),
+                  case process_alive(LeaderPid) of
                       true ->
-                          LeaderPid = amqqueue:get_pid(Q),
-                          case process_alive(LeaderPid) of
-                              true ->
-                                  {ok, LeaderPid};
-                              false ->
-                                  case leader_from_members(Q) of
-                                      {ok, Pid} ->
-                                          {ok, Pid};
-                                      _ ->
-                                          {error, not_available}
-                                  end
-                          end;
-                      _ ->
-                          {error, not_found}
+                          {ok, LeaderPid};
+                      false ->
+                          case leader_from_members(Q) of
+                              {ok, Pid} ->
+                                  {ok, Pid};
+                              _ ->
+                                  {error, not_available}
+                          end
                   end;
-              {error, not_found} ->
-                  case rabbit_amqqueue:not_found_or_absent_dirty(Name) of
-                      not_found ->
-                          {error, not_found};
-                      _ ->
-                          {error, not_available}
-                  end
+              R ->
+                  R
           end,
     {reply, Res, State};
 handle_call({lookup_local_member, VirtualHost, Stream}, _From,
             State) ->
-    Name =
-        #resource{virtual_host = VirtualHost,
-                  kind = queue,
-                  name = Stream},
-    Res = case rabbit_amqqueue:lookup(Name) of
+    Res = case lookup_stream(VirtualHost, Stream) of
               {ok, Q} ->
-                  case is_stream_queue(Q) of
-                      true ->
-                          #{name := StreamName} = amqqueue:get_type_state(Q),
-                          % FIXME check if pid is alive in case of stale information
-                          case rabbit_stream_coordinator:local_pid(StreamName)
-                          of
-                              {ok, Pid} when is_pid(Pid) ->
-                                  {ok, Pid};
-                              {error, timeout} ->
-                                  {error, not_available};
-                              _ ->
-                                  {error, not_available}
-                          end;
-                      _ ->
-                          {error, not_found}
-                  end;
-              {error, not_found} ->
-                  case rabbit_amqqueue:not_found_or_absent_dirty(Name) of
-                      not_found ->
-                          {error, not_found};
+                  #{name := StreamName} = amqqueue:get_type_state(Q),
+                  % FIXME check if pid is alive in case of stale information
+                  case rabbit_stream_coordinator:local_pid(StreamName) of
+                      {ok, Pid} when is_pid(Pid) ->
+                          {ok, Pid};
+                      {error, timeout} ->
+                          {error, not_available};
                       _ ->
                           {error, not_available}
-                  end
+                  end;
+              R ->
+                  R
+          end,
+    {reply, Res, State};
+handle_call({lookup_member, VirtualHost, Stream}, _From, State) ->
+    Res = case lookup_stream(VirtualHost, Stream) of
+              {ok, Q} ->
+                  #{name := StreamName} = amqqueue:get_type_state(Q),
+                  % FIXME check if pid is alive in case of stale information
+                  case rabbit_stream_coordinator:local_pid(StreamName) of
+                      {ok, Pid} when is_pid(Pid) ->
+                          {ok, Pid};
+                      _ ->
+                          case rabbit_stream_coordinator:members(StreamName) of
+                              {ok, Members} ->
+                                  case lists:search(fun ({undefined, _Role}) ->
+                                                            false;
+                                                        ({P, _Role})
+                                                            when is_pid(P) ->
+                                                            process_alive(P);
+                                                        (_) ->
+                                                            false
+                                                    end,
+                                                    maps:values(Members))
+                                  of
+                                      {value, {Pid, _Role}} ->
+                                          {ok, Pid};
+                                      _ ->
+                                          {error, not_available}
+                                  end;
+                              _ ->
+                                  {error, not_available}
+                          end
+                  end;
+              R ->
+                  R
           end,
     {reply, Res, State};
 handle_call({topology, VirtualHost, Stream}, _From, State) ->
-    Name =
-        #resource{virtual_host = VirtualHost,
-                  kind = queue,
-                  name = Stream},
-    Res = case rabbit_amqqueue:lookup(Name) of
+    Res = case lookup_stream(VirtualHost, Stream) of
               {ok, Q} ->
-                  case is_stream_queue(Q) of
-                      true ->
-                          QState = amqqueue:get_type_state(Q),
-                          #{name := StreamName} = QState,
-                          case rabbit_stream_coordinator:members(StreamName) of
-                              {ok, Members} ->
-                                  {ok,
-                                   maps:fold(fun (_Node, {undefined, _Role},
-                                                  Acc) ->
-                                                     Acc;
-                                                 (LeaderNode, {_Pid, writer},
-                                                  Acc) ->
-                                                     Acc#{leader_node =>
-                                                              LeaderNode};
-                                                 (ReplicaNode, {_Pid, replica},
-                                                  Acc) ->
-                                                     #{replica_nodes :=
-                                                           ReplicaNodes} =
-                                                         Acc,
-                                                     Acc#{replica_nodes =>
-                                                              ReplicaNodes
-                                                              ++ [ReplicaNode]};
-                                                 (_Node, _, Acc) ->
-                                                     Acc
-                                             end,
-                                             #{leader_node => undefined,
-                                               replica_nodes => []},
-                                             Members)};
-                              _ ->
-                                  {error, stream_not_available}
-                          end;
+                  QState = amqqueue:get_type_state(Q),
+                  #{name := StreamName} = QState,
+                  case rabbit_stream_coordinator:members(StreamName) of
+                      {ok, Members} ->
+                          {ok,
+                           maps:fold(fun (_Node, {undefined, _Role}, Acc) ->
+                                             Acc;
+                                         (LeaderNode, {_Pid, writer}, Acc) ->
+                                             Acc#{leader_node => LeaderNode};
+                                         (ReplicaNode, {_Pid, replica}, Acc) ->
+                                             #{replica_nodes := ReplicaNodes} =
+                                                 Acc,
+                                             Acc#{replica_nodes =>
+                                                      ReplicaNodes
+                                                      ++ [ReplicaNode]};
+                                         (_Node, _, Acc) ->
+                                             Acc
+                                     end,
+                                     #{leader_node => undefined,
+                                       replica_nodes => []},
+                                     Members)};
                       _ ->
-                          {error, stream_not_found}
+                          {error, not_available}
                   end;
               {error, not_found} ->
-                  case rabbit_amqqueue:not_found_or_absent_dirty(Name) of
-                      not_found ->
-                          {error, stream_not_found};
-                      _ ->
-                          {error, stream_not_available}
-                  end
+                  {error, stream_not_found};
+              {error, not_available} ->
+                  {error, stream_not_available};
+              R ->
+                  R
           end,
     {reply, Res, State};
 handle_call({route, RoutingKey, VirtualHost, SuperStream}, _From,
@@ -424,7 +433,7 @@ handle_call({route, RoutingKey, VirtualHost, SuperStream}, _From,
               end
           catch
               exit:Error ->
-                  rabbit_log:error("Error while looking up exchange ~p, ~p",
+                  rabbit_log:error("Error while looking up exchange ~tp, ~tp",
                                    [rabbit_misc:rs(ExchangeName), Error]),
                   {error, stream_not_found}
           end,
@@ -435,8 +444,8 @@ handle_call({partitions, VirtualHost, SuperStream}, _From, State) ->
 handle_call({partition_index, VirtualHost, SuperStream, Stream},
             _From, State) ->
     ExchangeName = rabbit_misc:r(VirtualHost, exchange, SuperStream),
-    rabbit_log:debug("Looking for partition index of stream ~p in super "
-                     "stream ~p (virtual host ~p)",
+    rabbit_log:debug("Looking for partition index of stream ~tp in super "
+                     "stream ~tp (virtual host ~tp)",
                      [Stream, SuperStream, VirtualHost]),
     Res = try
               rabbit_exchange:lookup_or_die(ExchangeName),
@@ -447,7 +456,7 @@ handle_call({partition_index, VirtualHost, SuperStream, Stream},
                       is_resource_stream_queue(D), Q == Stream],
               OrderedBindings =
                   rabbit_stream_utils:sort_partitions(UnorderedBindings),
-              rabbit_log:debug("Bindings: ~p", [OrderedBindings]),
+              rabbit_log:debug("Bindings: ~tp", [OrderedBindings]),
               case OrderedBindings of
                   [] ->
                       {error, stream_not_found};
@@ -481,7 +490,7 @@ handle_call({partition_index, VirtualHost, SuperStream, Stream},
               end
           catch
               exit:Error ->
-                  rabbit_log:error("Error while looking up exchange ~p, ~p",
+                  rabbit_log:error("Error while looking up exchange ~tp, ~tp",
                                    [ExchangeName, Error]),
                   {error, stream_not_found}
           end,
@@ -493,7 +502,7 @@ handle_cast(_, State) ->
     {noreply, State}.
 
 handle_info(Info, State) ->
-    rabbit_log:info("Received info ~p", [Info]),
+    rabbit_log:info("Received info ~tp", [Info]),
     {noreply, State}.
 
 create_stream(VirtualHost, Reference, Arguments, Username) ->
@@ -536,27 +545,43 @@ create_stream(VirtualHost, Reference, Arguments, Username) ->
                                 {existing, _} ->
                                     {error, reference_already_exists};
                                 {error, Err} ->
-                                    rabbit_log:warning("Error while creating ~p stream, ~p",
+                                    rabbit_log:warning("Error while creating ~tp stream, ~tp",
                                                        [Reference, Err]),
-                                    {error, internal_error}
+                                    {error, internal_error};
+                                {protocol_error,
+                                 precondition_failed,
+                                 Msg,
+                                 Args} ->
+                                    rabbit_log:warning("Error while creating ~tp stream, "
+                                                       ++ Msg,
+                                                       [Reference] ++ Args),
+                                    {error, validation_failed}
                             end
                         catch
                             exit:Error ->
-                                rabbit_log:error("Error while creating ~p stream, ~p",
+                                rabbit_log:error("Error while creating ~tp stream, ~tp",
                                                  [Reference, Error]),
                                 {error, internal_error}
                         end;
                     {error, {absent, _, Reason}} ->
-                        rabbit_log:error("Error while creating ~p stream, ~p",
+                        rabbit_log:error("Error while creating ~tp stream, ~tp",
                                          [Reference, Reason]),
                         {error, internal_error}
                 end
             catch
                 exit:ExitError ->
-                    % likely to be a problem of inequivalent args on an existing stream
-                    rabbit_log:error("Error while creating ~p stream: ~p",
-                                     [Reference, ExitError]),
-                    {error, validation_failed}
+                    case ExitError of
+                        % likely a problem of inequivalent args on an existing stream
+                        {amqp_error, precondition_failed, M, _} ->
+                            rabbit_log:info("Error while creating ~tp stream, "
+                                            ++ M,
+                                            [Reference]),
+                            {error, validation_failed};
+                        E ->
+                            rabbit_log:warning("Error while creating ~tp stream, ~tp",
+                                               [Reference, E]),
+                            {error, validation_failed}
+                    end
             end;
         error ->
             {error, validation_failed}
@@ -567,26 +592,26 @@ delete_stream(VirtualHost, Reference, Username) ->
         #resource{virtual_host = VirtualHost,
                   kind = queue,
                   name = Reference},
-    rabbit_log:debug("Trying to delete stream ~p", [Reference]),
+    rabbit_log:debug("Trying to delete stream ~tp", [Reference]),
     case rabbit_amqqueue:lookup(Name) of
         {ok, Q} ->
-            rabbit_log:debug("Found queue record ~p, checking if it is a stream",
+            rabbit_log:debug("Found queue record ~tp, checking if it is a stream",
                              [Reference]),
             case is_stream_queue(Q) of
                 true ->
-                    rabbit_log:debug("Queue record ~p is a stream, trying to delete it",
+                    rabbit_log:debug("Queue record ~tp is a stream, trying to delete it",
                                      [Reference]),
                     {ok, _} =
                         rabbit_stream_queue:delete(Q, false, false, Username),
-                    rabbit_log:debug("Stream ~p deleted", [Reference]),
+                    rabbit_log:debug("Stream ~tp deleted", [Reference]),
                     {ok, deleted};
                 _ ->
-                    rabbit_log:debug("Queue record ~p is NOT a stream, returning error",
+                    rabbit_log:debug("Queue record ~tp is NOT a stream, returning error",
                                      [Reference]),
                     {error, reference_not_found}
             end;
         {error, not_found} ->
-            rabbit_log:debug("Stream ~p not found, cannot delete it",
+            rabbit_log:debug("Stream ~tp not found, cannot delete it",
                              [Reference]),
             {error, reference_not_found}
     end.
@@ -613,7 +638,7 @@ super_stream_partitions(VirtualHost, SuperStream) ->
                      [], OrderedBindings)}
     catch
         exit:Error ->
-            rabbit_log:error("Error while looking up exchange ~p, ~p",
+            rabbit_log:error("Error while looking up exchange ~tp, ~tp",
                              [ExchangeName, Error]),
             {error, stream_not_found}
     end.
@@ -623,12 +648,12 @@ validate_super_stream_creation(VirtualHost, Name, Partitions) ->
         {error, validation_failed} ->
             {error,
              {validation_failed,
-              rabbit_misc:format("~s is not a correct name for a super stream",
+              rabbit_misc:format("~ts is not a correct name for a super stream",
                                  [Name])}};
         {ok, true} ->
             {error,
              {reference_already_exists,
-              rabbit_misc:format("there is already an exchange named ~s",
+              rabbit_misc:format("there is already an exchange named ~ts",
                                  [Name])}};
         {ok, false} ->
             case check_already_existing_queue(VirtualHost, Partitions) of
@@ -669,11 +694,11 @@ check_already_existing_queue0(VirtualHost, [Q | T], _Error) ->
         {ok, true} ->
             {error,
              {reference_already_exists,
-              rabbit_misc:format("there is already a queue named ~s", [Q])}};
+              rabbit_misc:format("there is already a queue named ~ts", [Q])}};
         {error, validation_failed} ->
             {error,
              {validation_failed,
-              rabbit_misc:format("~s is not a correct name for a queue", [Q])}}
+              rabbit_misc:format("~ts is not a correct name for a queue", [Q])}}
     end.
 
 declare_super_stream_exchange(VirtualHost, Name, Username) ->
@@ -709,7 +734,7 @@ declare_super_stream_exchange(VirtualHost, Name, Username) ->
             catch
                 exit:ExitError ->
                     % likely to be a problem of inequivalent args on an existing stream
-                    rabbit_log:error("Error while creating ~p super stream exchange: ~p",
+                    rabbit_log:error("Error while creating ~tp super stream exchange: ~tp",
                                      [Name, ExitError]),
                     {error, validation_failed}
             end;
@@ -786,21 +811,21 @@ add_super_stream_binding(VirtualHost,
         {error, {resources_missing, [{not_found, Name} | _]}} ->
             {error,
              {stream_not_found,
-              rabbit_misc:format("stream ~s does not exists", [Name])}};
+              rabbit_misc:format("stream ~ts does not exists", [Name])}};
         {error, {resources_missing, [{absent, Q, _Reason} | _]}} ->
             {error,
              {stream_not_found,
-              rabbit_misc:format("stream ~s does not exists (absent)", [Q])}};
+              rabbit_misc:format("stream ~ts does not exists (absent)", [Q])}};
         {error, binding_not_found} ->
             {error,
              {not_found,
-              rabbit_misc:format("no binding ~s between ~s and ~s",
+              rabbit_misc:format("no binding ~ts between ~ts and ~ts",
                                  [RoutingKey, rabbit_misc:rs(ExchangeName),
                                   rabbit_misc:rs(QueueName)])}};
         {error, {binding_invalid, Fmt, Args}} ->
             {error, {binding_invalid, rabbit_misc:format(Fmt, Args)}};
         {error, #amqp_error{} = Error} ->
-            {error, {internal_error, rabbit_misc:format("~p", [Error])}};
+            {error, {internal_error, rabbit_misc:format("~tp", [Error])}};
         ok ->
             ok
     end.
@@ -817,6 +842,28 @@ delete_super_stream_exchange(VirtualHost, Name, Username) ->
             end;
         error ->
             {error, validation_failed}
+    end.
+
+lookup_stream(VirtualHost, Stream) ->
+    Name =
+        #resource{virtual_host = VirtualHost,
+                  kind = queue,
+                  name = Stream},
+    case rabbit_amqqueue:lookup(Name) of
+        {ok, Q} ->
+            case is_stream_queue(Q) of
+                true ->
+                    {ok, Q};
+                _ ->
+                    {error, not_found}
+            end;
+        {error, not_found} ->
+            case rabbit_amqqueue:not_found_or_absent_dirty(Name) of
+                not_found ->
+                    {error, not_found};
+                _ ->
+                    {error, not_available}
+            end
     end.
 
 leader_from_members(Q) ->
@@ -842,7 +889,12 @@ process_alive(Pid) ->
         CurrentNode ->
             is_process_alive(Pid);
         OtherNode ->
-            rpc:call(OtherNode, erlang, is_process_alive, [Pid], 10000)
+            case rpc:call(OtherNode, erlang, is_process_alive, [Pid], 10000) of
+                B when is_boolean(B) ->
+                    B;
+                _ ->
+                    false
+            end
     end.
 
 is_stream_queue(Q) ->

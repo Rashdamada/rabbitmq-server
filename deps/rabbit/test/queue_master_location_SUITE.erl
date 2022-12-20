@@ -99,7 +99,7 @@ init_per_testcase(Testcase, Config) ->
     rabbit_ct_helpers:testcase_started(Config, Testcase),
     ClusterSize = ?config(rmq_nodes_count, Config),
     Nodenames = [
-      list_to_atom(rabbit_misc:format("~s-~b", [Testcase, I]))
+      list_to_atom(rabbit_misc:format("~ts-~b", [Testcase, I]))
       || I <- lists:seq(1, ClusterSize)
     ],
     TestNumber = rabbit_ct_helpers:testcase_number(Config, ?MODULE, Testcase),
@@ -109,26 +109,10 @@ init_per_testcase(Testcase, Config) ->
         {rmq_nodename_suffix, Testcase},
         {tcp_ports_base, {skip_n_nodes, TestNumber * ClusterSize}}
       ]),
-    Config2 = rabbit_ct_helpers:run_steps(
-                Config1,
-                rabbit_ct_broker_helpers:setup_steps() ++
-                rabbit_ct_client_helpers:setup_steps()),
-    Group = proplists:get_value(name, ?config(tc_group_properties, Config)),
-    FFEnabled = case Group of
-                    maintenance_mode ->
-                        rabbit_ct_broker_helpers:enable_feature_flag(
-                          Config2,
-                          maintenance_mode_status);
-                    _ ->
-                        ok
-                end,
-    case FFEnabled of
-        ok ->
-            Config2;
-        Skip ->
-            end_per_testcase(Testcase, Config2),
-            Skip
-    end.
+    rabbit_ct_helpers:run_steps(
+      Config1,
+      rabbit_ct_broker_helpers:setup_steps() ++
+      rabbit_ct_client_helpers:setup_steps()).
 
 end_per_testcase(Testcase, Config) ->
     Config1 = rabbit_ct_helpers:run_steps(Config,
@@ -290,7 +274,7 @@ declare_with_all_nodes_under_maintenance(Config, Locator) ->
     rabbit_ct_broker_helpers:mark_as_being_drained(Config, 2),
 
     QName = rabbit_data_coercion:to_binary(
-        rabbit_misc:format("qm.tests.~s.maintenance.case2", [Locator])),
+        rabbit_misc:format("qm.tests.~ts.maintenance.case2", [Locator])),
     Resource = rabbit_misc:r(<<"/">>, queue, QName),
     Record = declare(Config, Resource, false, false, _Args = [], none),
     %% when queue master locator returns no node, the node that handles

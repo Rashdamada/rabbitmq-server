@@ -27,6 +27,7 @@
          forward/4,
          ack/3,
          nack/3,
+         status/1,
          % common functions
          decr_remaining_unacked/1,
          decr_remaining/2
@@ -80,7 +81,7 @@
 -callback nack(Tag :: tag(), Multi :: boolean(), state()) -> state().
 -callback forward(Tag :: tag(), Props :: #{atom() => any()},
                   Payload :: binary(), state()) -> state().
-
+-callback status(state()) -> rabbit_shovel_status:blocked_status() | ignore.
 
 -spec parse(atom(), binary(), {source | destination, proplists:proplist()}) ->
     source_config() | dest_config().
@@ -151,7 +152,12 @@ ack(Tag, Multi, #{source := #{module := Mod}} = State) ->
 nack(Tag, Multi, #{source := #{module := Mod}} = State) ->
     Mod:nack(Tag, Multi, State).
 
+status(#{dest := #{module := Mod}} = State) ->
+    Mod:status(State).
+
 %% Common functions
+
+%% Count down until we stop publishing in on-confirm mode
 decr_remaining_unacked(State = #{source := #{remaining_unacked := unlimited}}) ->
     State;
 decr_remaining_unacked(State = #{source := #{remaining_unacked := 0}}) ->
@@ -159,6 +165,7 @@ decr_remaining_unacked(State = #{source := #{remaining_unacked := 0}}) ->
 decr_remaining_unacked(State = #{source := #{remaining_unacked := N} = Src}) ->
     State#{source => Src#{remaining_unacked =>  N - 1}}.
 
+%% Count down until we shut down in all modes
 decr_remaining(_N, State = #{source := #{remaining := unlimited}}) ->
     State;
 decr_remaining(N, State = #{source := #{remaining := M} = Src,
@@ -166,7 +173,7 @@ decr_remaining(N, State = #{source := #{remaining := M} = Src,
     case M > N of
         true  -> State#{source => Src#{remaining => M - N}};
         false ->
-            rabbit_log_shovel:info("shutting down Shovel '~s', no messages left to transfer", [Name]),
-            rabbit_log_shovel:debug("shutting down Shovel '~s', no messages left to transfer. Shovel state: ~p", [Name, State]),
+            rabbit_log_shovel:info("shutting down Shovel '~ts', no messages left to transfer", [Name]),
+            rabbit_log_shovel:debug("shutting down Shovel '~ts', no messages left to transfer. Shovel state: ~tp", [Name, State]),
             exit({shutdown, autodelete})
     end.

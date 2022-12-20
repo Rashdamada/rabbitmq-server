@@ -9,13 +9,13 @@ on:
 jobs:
   run-a:
     name: Run A
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-20.04
     strategy:
       matrix:
         erlang_version:
-        - "24"
+        - "25"
         include:
-        - erlang_version: "24"
+        - erlang_version: "25"
           cache_name: ci-bazel-cache-analysis
     timeout-minutes: 120
     steps:
@@ -37,20 +37,20 @@ jobs:
           --config=rbe-${{ matrix.erlang_version }} \
           --execution_log_binary_file=/tmp/exec.log
     - name: SAVE EXECUTION LOG BINARY
-      uses: actions/upload-artifact@v2-preview
+      uses: actions/upload-artifact@v3.1.1
       with:
         name: execution-log-binary-A
         path: /tmp/exec.log
   run-b:
     name: Run B
     needs: run-a
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-20.04
     strategy:
       matrix:
         erlang_version:
-        - "24"
+        - "25"
         include:
-        - erlang_version: "24"
+        - erlang_version: "25"
           cache_name: ci-bazel-cache-analysis
     timeout-minutes: 120
     steps:
@@ -72,14 +72,14 @@ jobs:
           --config=rbe-${{ matrix.erlang_version }} \
           --execution_log_binary_file=/tmp/exec.log
     - name: SAVE EXECUTION LOG BINARY
-      uses: actions/upload-artifact@v2-preview
+      uses: actions/upload-artifact@v3.1.1
       with:
         name: execution-log-binary-B
         path: /tmp/exec.log
   parse-logs:
     name: Parse Logs
     needs: [run-a, run-b]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-20.04
     steps:
     - name: CHECKOUT BAZEL
       uses: actions/checkout@v3
@@ -87,7 +87,7 @@ jobs:
         repository: bazelbuild/bazel
         path: bazel
     - name: MOUNT BAZEL CACHE
-      uses: actions/cache@v3.0.2
+      uses: actions/cache@v3.0.11
       with:
         path: "/home/runner/.cache/bazel"
         key: bazel
@@ -105,7 +105,7 @@ jobs:
           --output_path=/tmp/execution-log-binary-A.log.txt \
           --output_path=/tmp/execution-log-binary-B.log.txt
     - name: SAVE PARSED LOGS
-      uses: actions/upload-artifact@v2-preview
+      uses: actions/upload-artifact@v3.1.1
       with:
         name: parsed-logs
         path: /tmp/execution-log-binary-*.log.txt

@@ -30,6 +30,7 @@
          close_dest/1,
          ack/3,
          nack/3,
+         status/1,
          forward/4
         ]).
 
@@ -183,7 +184,7 @@ handle_source({amqp10_event, {connection, Conn, opened}},
 handle_source({amqp10_event, {connection, Conn, {closed, Why}}},
               #{source := #{current := #{conn := Conn}},
                 name := Name}) ->
-    ?INFO("Shovel ~s source connection closed. Reason: ~p", [Name, Why]),
+    ?INFO("Shovel ~ts source connection closed. Reason: ~tp", [Name, Why]),
     {stop, {inbound_conn_closed, Why}};
 handle_source({amqp10_event, {session, Sess, begun}},
               State = #{source := #{current := #{session := Sess}}}) ->
@@ -200,6 +201,10 @@ handle_source({amqp10_event, {link, Link, _Evt}},
 handle_source({'EXIT', Conn, Reason},
               #{source := #{current := #{conn := Conn}}}) ->
     {stop, {outbound_conn_died, Reason}};
+
+handle_source({'EXIT', _Pid, {shutdown, {server_initiated_close, ?PRECONDITION_FAILED, Reason}}}, _State) ->
+    {stop, {inbound_link_or_channel_closure, Reason}};
+
 handle_source(_Msg, _State) ->
     not_handled.
 
@@ -216,7 +221,7 @@ handle_dest({amqp10_disposition, {Result, Tag}},
             {#{Tag := IncomingTag}, rejected} ->
                 {1, rabbit_shovel_behaviour:nack(IncomingTag, false, State1)};
             _ -> % not found - this should ideally not happen
-                rabbit_log_shovel:warning("Shovel ~s amqp10 destination disposition tag not found: ~p",
+                rabbit_log_shovel:warning("Shovel ~ts amqp10 destination disposition tag not found: ~tp",
                                           [Name, Tag]),
                 {0, State1}
         end,
@@ -227,7 +232,7 @@ handle_dest({amqp10_event, {connection, Conn, opened}},
 handle_dest({amqp10_event, {connection, Conn, {closed, Why}}},
             #{name := Name,
               dest := #{current := #{conn := Conn}}}) ->
-    ?INFO("Shovel ~s destination connection closed. Reason: ~p", [Name, Why]),
+    ?INFO("Shovel ~ts destination connection closed. Reason: ~tp", [Name, Why]),
     {stop, {outbound_conn_died, Why}};
 handle_dest({amqp10_event, {session, Sess, begun}},
             State = #{dest := #{current := #{session := Sess}}}) ->
@@ -254,6 +259,10 @@ handle_dest({amqp10_event, {link, Link, _Evt}},
 handle_dest({'EXIT', Conn, Reason},
             #{dest := #{current := #{conn := Conn}}}) ->
     {stop, {outbound_conn_died, Reason}};
+
+handle_dest({'EXIT', _Pid, {shutdown, {server_initiated_close, ?PRECONDITION_FAILED, Reason}}}, _State) ->
+    {stop, {outbound_link_or_channel_closure, Reason}};
+
 handle_dest(_Msg, _State) ->
     not_handled.
 
@@ -293,6 +302,14 @@ nack(Tag, true, State = #{source := #{current := #{session := Session},
     ok = amqp10_client_session:disposition(Session, receiver, First,
                                            Tag, true, accepted),
     State#{source => Src#{last_nacked_tag => Tag}}.
+
+status(#{dest := #{current := #{link_state := attached}}}) ->
+    flow;
+status(#{dest := #{current := #{link_state := credited}}}) ->
+    running;
+status(_) ->
+    %% Destination not yet connected
+    ignore.
 
 -spec forward(Tag :: tag(), Props :: #{atom() => any()},
               Payload :: binary(), state()) -> state().

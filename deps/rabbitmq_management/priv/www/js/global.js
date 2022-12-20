@@ -120,7 +120,8 @@ var ALL_COLUMNS =
                   ['connected_at', 'Connected at', false]]},
 
      'vhosts':
-     {'Overview': [['cluster-state',   'Cluster state',  false],
+     {'Overview': [['default-queue-type', 'Default queue type', false],
+                   ['cluster-state',   'Cluster state',  false],
                    ['description',   'Description',  false],
                    ['tags',   'Tags',  false]],
       'Messages': [['msgs-ready',      'Ready',          true],
@@ -655,7 +656,7 @@ function setup_global_vars() {
 
     user_name = fmt_escape_html(user.name);
     $('#header #logout').prepend(
-      'User ' + (user_administrator ?  '<a href="#/users/' + user_name + '">' + user_name + '</a>' : user_name)
+      'User ' + (user_administrator && !oauth.enabled ?  '<a href="#/users/' + user_name + '">' + user_name + '</a>' : user_name)
     );
 
     var product = overview.rabbitmq_version;
@@ -685,14 +686,14 @@ function setup_global_vars() {
     }
     vhosts_interesting = JSON.parse(sync_get('/vhosts')).length > 1;
 
-    queue_type = "classic";
+    queue_type = "default";
     current_vhost = get_pref('vhost');
     exchange_types = overview.exchange_types;
 
     disable_stats = overview.disable_stats;
     enable_queue_totals = overview.enable_queue_totals;
     COLUMNS = disable_stats?DISABLED_STATS_COLUMNS:ALL_COLUMNS;
-    
+
     setup_chart_ranges(overview.sample_retention_policies);
 }
 
@@ -805,6 +806,4 @@ var chart_data = {};
 // because things were deleted between refreshes
 var last_page_out_of_range_error = 0;
 
-var enable_uaa;
-var uaa_client_id;
-var uaa_location;
+var oauth;

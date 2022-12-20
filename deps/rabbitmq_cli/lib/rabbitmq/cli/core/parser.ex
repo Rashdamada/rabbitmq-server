@@ -24,7 +24,7 @@ defmodule RabbitMQ.CLI.Core.Parser do
       file: :string,
       script_name: :string,
       rabbitmq_home: :string,
-      mnesia_dir: :string,
+      data_dir: :string,
       plugins_dir: :string,
       enabled_plugins_file: :string,
       aliases_file: :string,
@@ -46,6 +46,8 @@ defmodule RabbitMQ.CLI.Core.Parser do
       # for backwards compatibility,
       # not all commands support timeouts
       t: :timeout,
+      # For backwards compatibility, `mnesia_dir` was renamed to `data_dir`.
+      mnesia_dir: :data_dir,
       "?": :help
     ]
   end
@@ -70,19 +72,22 @@ defmodule RabbitMQ.CLI.Core.Parser do
         {[_alias_command_name | cmd_arguments], cmd_options, cmd_invalid} =
           parse_alias(input, command_name, alias_module, alias_content, options)
 
-        {alias_module, command_name, cmd_arguments, Helpers.atomize_values(cmd_options, @atomized_options), cmd_invalid}
+        {alias_module, command_name, cmd_arguments,
+         Helpers.atomize_values(cmd_options, @atomized_options), cmd_invalid}
 
       command_module when is_atom(command_module) ->
         {[^command_name | cmd_arguments], cmd_options, cmd_invalid} =
           parse_command_specific(input, command_module, options)
 
-        {command_module, command_name, cmd_arguments, Helpers.atomize_values(cmd_options, @atomized_options), cmd_invalid}
+        {command_module, command_name, cmd_arguments,
+         Helpers.atomize_values(cmd_options, @atomized_options), cmd_invalid}
     end
   end
 
   def command_suggestion(_cmd_name, empty) when empty == %{} do
     nil
   end
+
   def command_suggestion(typed, module_map) do
     RabbitMQ.CLI.AutoComplete.suggest_command(typed, module_map)
   end

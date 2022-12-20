@@ -7,6 +7,7 @@
 
 -module(rabbit_ct_helpers).
 
+-include_lib("kernel/include/logger.hrl").
 -include_lib("common_test/include/ct.hrl").
 
 -deprecated({is_mixed_versions,1,"Use is_mixed_versions/0 instead"}).
@@ -26,6 +27,7 @@
     load_rabbitmqctl_app/1,
     ensure_rabbitmq_plugins_cmd/1,
     ensure_rabbitmq_queues_cmd/1,
+    redirect_logger_to_ct_logs/1,
     init_skip_as_error_flag/1,
     start_long_running_testsuite_monitor/1,
     stop_long_running_testsuite_monitor/1,
@@ -66,8 +68,8 @@ log_environment() ->
     Vars = lists:sort(fun(A, B) -> A =< B end, os:getenv()),
     case file:native_name_encoding() of
         latin1 ->
-            ct:pal(?LOW_IMPORTANCE, "Environment variables:~n~s",
-                   [[io_lib:format("  ~s~n", [V]) || V <- Vars]]);
+            ct:pal(?LOW_IMPORTANCE, "Environment variables:~n~ts",
+                   [[io_lib:format("  ~ts~n", [V]) || V <- Vars]]);
         utf8 ->
             ct:pal(?LOW_IMPORTANCE, "Environment variables:~n~ts",
                    [[io_lib:format("  ~ts~n", [V]) || V <- Vars]])
@@ -147,12 +149,40 @@ run_steps(Config, [Step | Rest]) ->
             run_steps(Config1, Rest);
         Other ->
             ct:pal(?LOW_IMPORTANCE,
-                "~p:~p/~p failed with ~p steps remaining (Config value ~p is not a proplist)",
+                "~tp:~tp/~tp failed with ~tp steps remaining (Config value ~tp is not a proplist)",
                 [?MODULE, ?FUNCTION_NAME, ?FUNCTION_ARITY, length(Rest), Other]),
             run_teardown_steps(Config),
             exit("A setup step returned a non-proplist")
     end;
 run_steps(Config, []) ->
+    Config.
+
+redirect_logger_to_ct_logs(Config) ->
+    ct:pal(
+      ?LOW_IMPORTANCE,
+      "Configuring logger to send logs to common_test logs"),
+    logger:set_handler_config(cth_log_redirect, level, debug),
+
+    %% Let's use the same format as RabbitMQ itself.
+    logger:set_handler_config(
+      cth_log_redirect, formatter,
+      rabbit_prelaunch_early_logging:default_file_formatter(#{})),
+
+    %% We use an addition logger handler for messages tagged with a non-OTP
+    %% domain because by default, `cth_log_redirect' drop them.
+    {ok, LogCfg0} = logger:get_handler_config(cth_log_redirect),
+    LogCfg = maps:remove(id, maps:remove(module, LogCfg0)),
+    ok = logger:add_handler(
+           cth_log_redirect_any_domains, cth_log_redirect_any_domains,
+           LogCfg),
+
+    logger:remove_handler(default),
+
+    ct:pal(
+      ?LOW_IMPORTANCE,
+      "Logger configured to send logs to common_test logs; you should see "
+      "a message below saying so"),
+    ?LOG_INFO("Logger message logged to common_test logs"),
     Config.
 
 init_skip_as_error_flag(Config) ->
@@ -380,12 +410,16 @@ ensure_rabbitmq_run_cmd(Config) ->
     end.
 
 ensure_rabbitmq_run_secondary_cmd(Config) ->
-    Path = os:getenv("RABBITMQ_RUN_SECONDARY"),
-    case filelib:is_file(Path) of
-        true  ->
-            set_config(Config, {rabbitmq_run_secondary_cmd, Path});
+    case os:getenv("RABBITMQ_RUN_SECONDARY") of
         false ->
-            Config
+            Config;
+        Path ->
+            case filelib:is_file(Path) of
+                true  ->
+                    set_config(Config, {rabbitmq_run_secondary_cmd, Path});
+                false ->
+                    error("RABBITMQ_RUN_SECONDARY was set, but is not a valid file")
+            end
     end.
 
 ensure_erl_call_cmd(Config) ->
@@ -407,12 +441,12 @@ ensure_rabbitmqctl_cmd(Config) ->
                     find_script(Config, "rabbitmqctl");
                 R ->
                     ct:pal(?LOW_IMPORTANCE,
-                      "Using rabbitmqctl from RABBITMQCTL: ~p~n", [R]),
+                      "Using rabbitmqctl from RABBITMQCTL: ~tp~n", [R]),
                     R
             end;
         R ->
             ct:pal(?LOW_IMPORTANCE,
-              "Using rabbitmqctl from rabbitmqctl_cmd: ~p~n", [R]),
+              "Using rabbitmqctl from rabbitmqctl_cmd: ~tp~n", [R]),
             R
     end,
     Error = {skip, "rabbitmqctl required, " ++
@@ -429,7 +463,7 @@ ensure_rabbitmqctl_cmd(Config) ->
                 {error, 64, _} ->
                     set_config(Config, {rabbitmqctl_cmd, Rabbitmqctl});
                 {error, Code, Reason} ->
-                    ct:pal("Exec failed with exit code ~p: ~p", [Code, Reason]),
+                    ct:pal("Exec failed with exit code ~tp: ~tp", [Code, Reason]),
                     Error;
                 _ ->
                     Error
@@ -443,7 +477,7 @@ find_script(Config, Script) ->
                     filelib:is_file(File)],
     case Locations of
         [Location | _] ->
-            ct:pal(?LOW_IMPORTANCE, "Using ~s at ~p~n", [Script, Location]),
+            ct:pal(?LOW_IMPORTANCE, "Using ~ts at ~tp~n", [Script, Location]),
             Location;
         [] ->
             false
@@ -487,7 +521,7 @@ load_rabbitmqctl_app(Config) ->
             Config;
         {error, Reason} ->
             ct:pal(?LOW_IMPORTANCE,
-              "Failed to load rabbitmqctl application: ~p", [Reason]),
+              "Failed to load rabbitmqctl application: ~tp", [Reason]),
             {skip, "Application rabbitmqctl could not be loaded, " ++
                 "please place compiled rabbitmq_cli on the code path"}
     end.
@@ -529,7 +563,7 @@ ensure_rabbitmq_queues_cmd(Config) ->
             end;
         R ->
             ct:pal(?LOW_IMPORTANCE,
-              "Using rabbitmq-queues from rabbitmq_queues_cmd: ~p~n", [R]),
+              "Using rabbitmq-queues from rabbitmq_queues_cmd: ~tp~n", [R]),
             R
     end,
     Error = {skip, "rabbitmq-queues required, " ++
@@ -548,7 +582,7 @@ ensure_rabbitmq_queues_cmd(Config) ->
                                {rabbitmq_queues_cmd,
                                 RabbitmqQueues});
                 {error, Code, Reason} ->
-                    ct:pal("Exec failed with exit code ~p: ~p", [Code, Reason]),
+                    ct:pal("Exec failed with exit code ~tp: ~tp", [Code, Reason]),
                     Error;
                 _ ->
                     Error
@@ -654,7 +688,7 @@ load_elixir(Config) ->
         {skip, _} = Skip ->
             Skip;
         ElixirLibDir ->
-            ct:pal(?LOW_IMPORTANCE, "Elixir lib dir: ~s~n", [ElixirLibDir]),
+            ct:pal(?LOW_IMPORTANCE, "Elixir lib dir: ~ts~n", [ElixirLibDir]),
             true = code:add_pathz(ElixirLibDir),
             application:load(elixir),
             {ok, _} = application:ensure_all_started(elixir),
@@ -691,11 +725,11 @@ long_running_testsuite_monitor(TimerRef, Testcases) ->
             long_running_testsuite_monitor(TimerRef, Testcases1);
         ping_ct ->
             T1 = erlang:monotonic_time(seconds),
-            ct:pal(?STD_IMPORTANCE, "Testcases still in progress:~s",
+            ct:pal(?STD_IMPORTANCE, "Testcases still in progress:~ts",
               [[
                   begin
                       TDiff = format_time_diff(T1, T0),
-                      rabbit_misc:format("~n - ~s (~s)", [TC, TDiff])
+                      rabbit_misc:format("~n - ~ts (~ts)", [TC, TDiff])
                   end
                   || {TC, T0} <- Testcases
                 ]]),
@@ -729,17 +763,17 @@ testcase_absname(Config, Testcase) ->
     testcase_absname(Config, Testcase, "/").
 
 testcase_absname(Config, Testcase, Sep) ->
-    Name = rabbit_misc:format("~s", [Testcase]),
+    Name = rabbit_misc:format("~ts", [Testcase]),
     case get_config(Config, tc_group_properties) of
         [] ->
             Name;
         Props ->
             Name1 = case Name of
                 "" ->
-                    rabbit_misc:format("~s",
+                    rabbit_misc:format("~ts",
                       [proplists:get_value(name, Props)]);
                 _ ->
-                    rabbit_misc:format("~s~s~s",
+                    rabbit_misc:format("~ts~ts~ts",
                       [proplists:get_value(name, Props), Sep, Name])
             end,
             testcase_absname1(Name1,
@@ -747,7 +781,7 @@ testcase_absname(Config, Testcase, Sep) ->
     end.
 
 testcase_absname1(Name, [Props | Rest], Sep) ->
-    Name1 = rabbit_misc:format("~s~s~s",
+    Name1 = rabbit_misc:format("~ts~ts~ts",
       [proplists:get_value(name, Props), Sep, Name]),
     testcase_absname1(Name1, Rest, Sep);
 testcase_absname1(Name, [], _) ->
@@ -833,7 +867,7 @@ exec([Cmd | Args], Options) when is_list(Cmd) orelse is_binary(Cmd) ->
         true  -> PortOptions;
         false -> [use_stdio, stderr_to_stdout | PortOptions]
     end,
-    Log = "+ ~s (pid ~p)",
+    Log = "+ ~ts (pid ~tp)",
     ExportedEnvVars = ["ERL_INETRC"],
     ExportedEnv = lists:foldl(
                     fun(Var, Env) ->
@@ -863,7 +897,7 @@ exec([Cmd | Args], Options) when is_list(Cmd) orelse is_binary(Cmd) ->
                | proplists:delete(env, PortOptions1)],
               Log ++ "~n~nEnvironment variables:~n" ++
               string:join(
-                [rabbit_misc:format("  ~s=~s", [K, V]) || {K, V} <- Env1],
+                [rabbit_misc:format("  ~ts=~ts", [K, V]) || {K, V} <- Env1],
                 "~n")
             }
     end,
@@ -889,7 +923,7 @@ exec([Cmd | Args], Options) when is_list(Cmd) orelse is_binary(Cmd) ->
         end
     catch
         error:Reason ->
-            ct:pal(?LOW_IMPORTANCE, "~s: ~s",
+            ct:pal(?LOW_IMPORTANCE, "~ts: ~ts",
               [Cmd1, file:format_error(Reason)]),
             {error, Reason, file:format_error(Reason)}
     end.
@@ -916,10 +950,10 @@ port_receive_loop(Port, Stdout, Options, Until, DumpTimer) ->
               Stdout =:= "",
           if
               DropStdout ->
-                  ct:pal(?LOW_IMPORTANCE, "Exit code: ~p (pid ~p)",
+                  ct:pal(?LOW_IMPORTANCE, "Exit code: ~tp (pid ~tp)",
                          [X, self()]);
               true ->
-                  ct:pal(?LOW_IMPORTANCE, "~ts~nExit code: ~p (pid ~p)",
+                  ct:pal(?LOW_IMPORTANCE, "~ts~nExit code: ~tp (pid ~tp)",
                          [Stdout, X, self()])
           end,
           case proplists:get_value(match_stdout, Options) of
@@ -941,7 +975,7 @@ port_receive_loop(Port, Stdout, Options, Until, DumpTimer) ->
               DropStdout ->
                   ok;
               true ->
-                  ct:pal(?LOW_IMPORTANCE, "~ts~n[Command still in progress] (pid ~p)",
+                  ct:pal(?LOW_IMPORTANCE, "~ts~n[Command still in progress] (pid ~tp)",
                          [Stdout, self()])
           end,
           port_receive_loop(Port, Stdout, Options, Until, stdout_dump_timer());
@@ -1067,7 +1101,7 @@ eventually({Line, Assertion} = TestObj, PollInterval, PollCount)
             ok;
         Err ->
             ct:pal(?LOW_IMPORTANCE,
-                   "Retrying in ~bms for ~b more times due to failed assertion in line ~b: ~p",
+                   "Retrying in ~bms for ~b more times due to failed assertion in line ~b: ~tp",
                    [PollInterval, PollCount - 1, Line, Err]),
             timer:sleep(PollInterval),
             eventually(TestObj, PollInterval, PollCount - 1)

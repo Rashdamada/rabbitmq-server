@@ -316,12 +316,7 @@ terminate(_Reason,           State = #q{q = Q}) ->
                                Q2 = amqqueue:set_state(Q, crashed),
                                rabbit_misc:execute_mnesia_transaction(
                                  fun() ->
-                                     ?try_mnesia_tx_or_upgrade_amqqueue_and_retry(
-                                        rabbit_amqqueue:store_queue(Q2),
-                                        begin
-                                            Q3 = amqqueue:upgrade(Q2),
-                                            rabbit_amqqueue:store_queue(Q3)
-                                        end)
+                                         rabbit_amqqueue:store_queue(Q2)
                                  end),
                                BQS
                        end, State).
@@ -584,10 +579,10 @@ assert_invariant(State = #q{consumers = Consumers, single_active_consumer_on = f
 
 is_empty(#q{backing_queue = BQ, backing_queue_state = BQS}) -> BQ:is_empty(BQS).
 
-maybe_send_drained(WasEmpty, State) ->
+maybe_send_drained(WasEmpty, #q{q = Q} = State) ->
     case (not WasEmpty) andalso is_empty(State) of
         true  -> notify_decorators(State),
-                 rabbit_queue_consumers:send_drained();
+                 rabbit_queue_consumers:send_drained(amqqueue:get_name(Q));
         false -> ok
     end,
     State.
@@ -691,8 +686,7 @@ attempt_delivery(Delivery = #delivery{sender  = SenderPid,
                                               backing_queue_state = BQS,
                                               msg_id_to_channel   = MTC}) ->
     case rabbit_queue_consumers:deliver(
-           fun (true)  -> true = BQ:is_empty(BQS),
-                          {AckTag, BQS1} =
+           fun (true)  -> {AckTag, BQS1} =
                               BQ:publish_delivered(
                                 Message, Props, SenderPid, Flow, BQS),
                           {{Message, Delivered, AckTag}, {BQS1, MTC}};
@@ -934,7 +928,7 @@ handle_ch_down(DownPid, State = #q{consumers                 = Consumers,
                 true  ->
                     log_auto_delete(
                         io_lib:format(
-                            "because all of its consumers (~p) were on a channel that was closed",
+                            "because all of its consumers (~tp) were on a channel that was closed",
                             [length(ChCTags)]),
                         State),
                     {stop, State2};
@@ -1214,13 +1208,15 @@ emit_stats(State) ->
 
 emit_stats(State, Extra) ->
     ExtraKs = [K || {K, _} <- Extra],
-    [{messages_ready, MR}, {messages_unacknowledged, MU}, {messages, M},
-     {reductions, R}, {name, Name} | Infos] = All
-	= [{K, V} || {K, V} <- infos(statistics_keys(), State),
-		     not lists:member(K, ExtraKs)],
+    [{messages_ready, MR},
+     {messages_unacknowledged, MU},
+     {messages, M},
+     {reductions, R},
+     {name, Name} | Infos]
+    = [{K, V} || {K, V} <- infos(statistics_keys(), State),
+                 not lists:member(K, ExtraKs)],
     rabbit_core_metrics:queue_stats(Name, Extra ++ Infos),
-    rabbit_core_metrics:queue_stats(Name, MR, MU, M, R),
-    rabbit_event:notify(queue_stats, Extra ++ All).
+    rabbit_core_metrics:queue_stats(Name, MR, MU, M, R).
 
 emit_consumer_created(ChPid, CTag, Exclusive, AckRequired, QName,
                       PrefetchCount, Args, Ref, ActingUser) ->
@@ -1277,9 +1273,6 @@ prioritise_cast(Msg, _Len, State) ->
 %% stack are optimised for that) and to make things easier to reason
 %% about. Finally, we prioritise ack over resume since it should
 %% always reduce memory use.
-%% bump_reduce_memory_use is prioritised over publishes, because sending
-%% credit to self is hard to reason about. Consumers can continue while
-%% reduce_memory_use is in progress.
 
 consumer_bias(#q{backing_queue = BQ, backing_queue_state = BQS}, Low, High) ->
     case BQ:msg_rates(BQS) of
@@ -1297,7 +1290,6 @@ prioritise_info(Msg, _Len, #q{q = Q}) ->
         {drop_expired, _Version}             -> 8;
         emit_stats                           -> 7;
         sync_timeout                         -> 6;
-        bump_reduce_memory_use               -> 1;
         _                                    -> 0
     end.
 
@@ -1360,7 +1352,8 @@ handle_call({basic_get, ChPid, NoAck, LimiterPid}, _From,
 
 handle_call({basic_consume, NoAck, ChPid, LimiterPid, LimiterActive,
              PrefetchCount, ConsumerTag, ExclusiveConsume, Args, OkMsg, ActingUser},
-            _From, State = #q{consumers             = Consumers,
+            _From, State = #q{q = Q,
+                              consumers = Consumers,
                               active_consumer = Holder,
                               single_active_consumer_on = SingleActiveConsumerOn}) ->
     ConsumerRegistration = case SingleActiveConsumerOn of
@@ -1369,11 +1362,12 @@ handle_call({basic_consume, NoAck, ChPid, LimiterPid, LimiterActive,
                 true  ->
                     {error, reply({error, exclusive_consume_unavailable}, State)};
                 false ->
-                  Consumers1 = rabbit_queue_consumers:add(
-                    ChPid, ConsumerTag, NoAck,
-                    LimiterPid, LimiterActive,
-                    PrefetchCount, Args, is_empty(State),
-                    ActingUser, Consumers),
+                    Consumers1 = rabbit_queue_consumers:add(
+                                   amqqueue:get_name(Q),
+                                   ChPid, ConsumerTag, NoAck,
+                                   LimiterPid, LimiterActive,
+                                   PrefetchCount, Args, is_empty(State),
+                                   ActingUser, Consumers),
 
                   case Holder of
                       none ->
@@ -1391,6 +1385,7 @@ handle_call({basic_consume, NoAck, ChPid, LimiterPid, LimiterActive,
               in_use -> {error, reply({error, exclusive_consume_unavailable}, State)};
               ok     ->
                     Consumers1 = rabbit_queue_consumers:add(
+                                   amqqueue:get_name(Q),
                                    ChPid, ConsumerTag, NoAck,
                                    LimiterPid, LimiterActive,
                                    PrefetchCount, Args, is_empty(State),
@@ -1453,7 +1448,7 @@ handle_call({basic_cancel, ChPid, ConsumerTag, OkMsg, ActingUser}, _From,
                 true  ->
                     log_auto_delete(
                         io_lib:format(
-                            "because its last consumer with tag '~s' was cancelled",
+                            "because its last consumer with tag '~ts' was cancelled",
                             [ConsumerTag]),
                         State),
                     stop(ok, State1)
@@ -1657,9 +1652,10 @@ handle_cast({credit, ChPid, CTag, Credit, Drain},
                        backing_queue_state = BQS,
                        q = Q}) ->
     Len = BQ:len(BQS),
-    rabbit_classic_queue:send_queue_event(ChPid, amqqueue:get_name(Q), {send_credit_reply, Len}),
+    rabbit_classic_queue:send_credit_reply(ChPid, amqqueue:get_name(Q), Len),
     noreply(
-      case rabbit_queue_consumers:credit(Len == 0, Credit, Drain, ChPid, CTag,
+      case rabbit_queue_consumers:credit(amqqueue:get_name(Q),
+                                         Len == 0, Credit, Drain, ChPid, CTag,
                                          Consumers) of
           unchanged               -> State;
           {unblocked, Consumers1} -> State1 = State#q{consumers = Consumers1},
@@ -1674,7 +1670,7 @@ handle_cast({force_event_refresh, Ref},
     rabbit_event:notify(queue_created, infos(?CREATION_EVENT_KEYS, State), Ref),
     QName = qname(State),
     AllConsumers = rabbit_queue_consumers:all(Consumers),
-    rabbit_log:debug("Queue ~s forced to re-emit events, consumers: ~p", [rabbit_misc:rs(QName), AllConsumers]),
+    rabbit_log:debug("Queue ~ts forced to re-emit events, consumers: ~tp", [rabbit_misc:rs(QName), AllConsumers]),
     [emit_consumer_created(
        Ch, CTag, ActiveOrExclusive, AckRequired, QName, Prefetch,
        Args, Ref, ActingUser) ||
@@ -1775,10 +1771,6 @@ handle_info({bump_credit, Msg}, State = #q{backing_queue       = BQ,
     %% rabbit_variable_queue:msg_store_write/4.
     credit_flow:handle_bump_msg(Msg),
     noreply(State#q{backing_queue_state = BQ:resume(BQS)});
-handle_info(bump_reduce_memory_use, State = #q{backing_queue       = BQ,
-                                               backing_queue_state = BQS0}) ->
-    BQS1 = BQ:handle_info(bump_reduce_memory_use, BQS0),
-    noreply(State#q{backing_queue_state = BQ:resume(BQS1)});
 
 handle_info(Info, State) ->
     {stop, {unhandled_info, Info}, State}.
@@ -1825,14 +1817,14 @@ log_delete_exclusive({ConPid, _ConRef}, State) ->
 log_delete_exclusive(ConPid, #q{ q = Q }) ->
     Resource = amqqueue:get_name(Q),
     #resource{ name = QName, virtual_host = VHost } = Resource,
-    rabbit_log_queue:debug("Deleting exclusive queue '~s' in vhost '~s' " ++
-                           "because its declaring connection ~p was closed",
+    rabbit_log_queue:debug("Deleting exclusive queue '~ts' in vhost '~ts' " ++
+                           "because its declaring connection ~tp was closed",
                            [QName, VHost, ConPid]).
 
 log_auto_delete(Reason, #q{ q = Q }) ->
     Resource = amqqueue:get_name(Q),
     #resource{ name = QName, virtual_host = VHost } = Resource,
-    rabbit_log_queue:debug("Deleting auto-delete queue '~s' in vhost '~s' " ++
+    rabbit_log_queue:debug("Deleting auto-delete queue '~ts' in vhost '~ts' " ++
                            Reason,
                            [QName, VHost]).
 

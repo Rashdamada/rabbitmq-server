@@ -19,10 +19,6 @@
 
 -behaviour('Elixir.RabbitMQ.CLI.CommandBehaviour').
 
--ignore_xref([{'Elixir.RabbitMQ.CLI.DefaultOutput', output, 1},
-              {'Elixir.RabbitMQ.CLI.Core.Helpers', cli_acting_user, 0},
-              {'Elixir.RabbitMQ.CLI.Core.ExitCodes', exit_software, 0}]).
-
 -export([scopes/0,
          usage/0,
          usage_additional/0,
@@ -40,7 +36,7 @@ scopes() ->
     [streams].
 
 description() ->
-    <<"Add a super stream (experimental feature)">>.
+    <<"Add a super stream">>.
 
 switches() ->
     [{partitions, integer},
@@ -99,7 +95,8 @@ validate_stream_arguments(#{stream_max_segment_size_bytes := Value} =
 validate_stream_arguments(#{leader_locator := <<"client-local">>} =
                               Opts) ->
     validate_stream_arguments(maps:remove(leader_locator, Opts));
-validate_stream_arguments(#{leader_locator := <<"balanced">>} = Opts) ->
+validate_stream_arguments(#{leader_locator := <<"balanced">>} =
+                              Opts) ->
     validate_stream_arguments(maps:remove(leader_locator, Opts));
 %% 'random' and 'least-leaders' are deprecated and get mapped to 'balanced'
 validate_stream_arguments(#{leader_locator := <<"random">>} = Opts) ->
@@ -276,14 +273,14 @@ create_super_stream(NodeName,
     of
         ok ->
             {ok,
-             rabbit_misc:format("Super stream ~s has been created",
+             rabbit_misc:format("Super stream ~ts has been created",
                                 [SuperStream])};
         Error ->
             Error
     end.
 
 banner(_, _) ->
-    <<"Adding a super stream (experimental feature)...">>.
+    <<"Adding a super stream...">>.
 
 output({error, Msg}, _Opts) ->
     {error, 'Elixir.RabbitMQ.CLI.Core.ExitCodes':exit_software(), Msg};

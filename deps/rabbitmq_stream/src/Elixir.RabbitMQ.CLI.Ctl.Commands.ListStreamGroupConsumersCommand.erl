@@ -19,11 +19,6 @@
 
 -behaviour('Elixir.RabbitMQ.CLI.CommandBehaviour').
 
--ignore_xref([{'Elixir.RabbitMQ.CLI.DefaultOutput', output, 1},
-              {'Elixir.RabbitMQ.CLI.Ctl.InfoKeys', prepare_info_keys, 1},
-              {'Elixir.RabbitMQ.CLI.Ctl.InfoKeys', validate_info_keys, 2},
-              {'Elixir.Enum', join, 2}]).
-
 -export([formatter/0,
          scopes/0,
          switches/0,
@@ -78,8 +73,8 @@ merge_defaults(Args, Opts) ->
     {Args, maps:merge(#{verbose => false, vhost => <<"/">>}, Opts)}.
 
 usage() ->
-    <<"list_stream_consumer_groups --stream <stream> "
-      "--reference <reference> [--vhost <vhost> [<column> "
+    <<"list_stream_group_consumers --stream <stream> "
+      "--reference <reference> [--vhost <vhost>] [<column> "
       "...]">>.
 
 usage_additional() ->

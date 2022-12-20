@@ -285,23 +285,15 @@ recover0() ->
          OpPolicy1 = match(QName, OpPolicies),
          Q2 = amqqueue:set_operator_policy(Q1, OpPolicy1),
          Q3 = rabbit_queue_decorator:set(Q2),
-         ?try_mnesia_tx_or_upgrade_amqqueue_and_retry(
-            rabbit_misc:execute_mnesia_transaction(
-              fun () ->
-                      mnesia:write(rabbit_durable_queue, Q3, write)
-              end),
-            begin
-                Q4 = amqqueue:upgrade(Q3),
-                rabbit_misc:execute_mnesia_transaction(
-                  fun () ->
-                          mnesia:write(rabbit_durable_queue, Q4, write)
-                  end)
-            end)
+         rabbit_misc:execute_mnesia_transaction(
+           fun () ->
+                   mnesia:write(rabbit_durable_queue, Q3, write)
+           end)
      end || Q0 <- Qs],
     ok.
 
 invalid_file() ->
-    filename:join(rabbit_mnesia:dir(), "policies_are_invalid").
+    filename:join(rabbit:data_dir(), "policies_are_invalid").
 
 %%----------------------------------------------------------------------------
 
@@ -318,7 +310,7 @@ parse_set(Type, VHost, Name, Pattern, Definition, Priority, ApplyTo, ActingUser)
         Num -> parse_set0(Type, VHost, Name, Pattern, Definition, Num, ApplyTo,
                           ActingUser)
     catch
-        error:badarg -> {error, "~p priority must be a number", [Priority]}
+        error:badarg -> {error, "~tp priority must be a number", [Priority]}
     end.
 
 parse_set0(Type, VHost, Name, Pattern, Defn, Priority, ApplyTo, ActingUser) ->
@@ -330,12 +322,12 @@ parse_set0(Type, VHost, Name, Pattern, Defn, Priority, ApplyTo, ActingUser) ->
                       {<<"priority">>,   Priority},
                       {<<"apply-to">>,   ApplyTo}],
                      ActingUser),
-            rabbit_log:info("Successfully set policy '~s' matching ~s names in virtual host '~s' using pattern '~s'",
+            rabbit_log:info("Successfully set policy '~ts' matching ~ts names in virtual host '~ts' using pattern '~ts'",
                             [Name, ApplyTo, VHost, Pattern]),
             R;
         {error, Reason} ->
             {error_string,
-                rabbit_misc:format("JSON decoding error. Reason: ~ts", [Reason])}
+                rabbit_misc:format("Could not parse JSON document: ~tp", [Reason])}
     end.
 
 set_op(VHost, Name, Pattern, Definition, Priority, ApplyTo, ActingUser) ->
@@ -585,12 +577,12 @@ validation(_Name, Terms, Validator) when is_list(Terms) ->
         true  -> {TermKeys, _} = lists:unzip(Terms),
                  case dups(TermKeys) of
                      []   -> validation0(Validators, Terms);
-                     Dup  -> {error, "~p duplicate keys not allowed", [Dup]}
+                     Dup  -> {error, "~tp duplicate keys not allowed", [Dup]}
                  end;
-        false -> {error, "definition must be a dictionary: ~p", [Terms]}
+        false -> {error, "definition must be a dictionary: ~tp", [Terms]}
     end;
 validation(Name, Term, Validator) ->
-    {error, "parse error while reading policy ~s: ~p. Validator: ~p.",
+    {error, "parse error while reading policy ~ts: ~tp. Validator: ~tp.",
      [Name, Term, Validator]}.
 
 validation0(Validators, Terms) ->
@@ -608,7 +600,7 @@ validation0(Validators, Terms) ->
          {ok, []} ->
              ok;
          {ok, Unvalidated} ->
-             {error, "~p are not recognised policy settings", [Unvalidated]};
+             {error, "~tp are not recognised policy settings", [Unvalidated]};
          {Error, _} ->
              Error
     end.
@@ -623,5 +615,5 @@ apply_to_validation(_Name, <<"all">>)       -> ok;
 apply_to_validation(_Name, <<"exchanges">>) -> ok;
 apply_to_validation(_Name, <<"queues">>)    -> ok;
 apply_to_validation(_Name, Term) ->
-    {error, "apply-to '~s' unrecognised; should be 'queues', 'exchanges' "
+    {error, "apply-to '~ts' unrecognised; should be 'queues', 'exchanges' "
      "or 'all'", [Term]}.

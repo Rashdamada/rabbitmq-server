@@ -15,8 +15,6 @@
 
 -export([list_registry_plugins/1]).
 
--import(rabbit_misc, [pget/2]).
-
 -include_lib("rabbit_common/include/rabbit.hrl").
 
 -define(METRICS_KEYS, [fd_used, sockets_used, mem_used, disk_free, proc_used, gc_num,
@@ -39,9 +37,9 @@
     fd_total,
     fhc_stats,
     node_owners,
-    last_ts,
     interval,
-    error_logged_time
+    error_logged_time,
+    fd_warning_logged
 }).
 
 %%--------------------------------------------------------------------
@@ -62,7 +60,7 @@ get_used_fd(State0) ->
         end
     catch
         _:Error ->
-            State2 = log_fd_error("Could not infer the number of file handles used: ~p", [Error], State0),
+            State2 = log_fd_error("Could not infer the number of file handles used: ~tp", [Error], State0),
             {State2, 0}
     end.
 
@@ -85,14 +83,14 @@ get_used_fd({unix, BSD}, State0)
         UsedFd = length(lists:filter(F, string:tokens(Output, "\n"))),
         {State0, UsedFd}
     catch _:Error:Stacktrace ->
-              State1 = log_fd_error("Could not parse fstat output:~n~s~n~p",
+              State1 = log_fd_error("Could not parse fstat output:~n~ts~n~tp",
                                     [Output, {Error, Stacktrace}], State0),
               {State1, 0}
     end;
 
 get_used_fd({unix, _}, State0) ->
     Cmd = rabbit_misc:format(
-            "lsof -d \"0-9999999\" -lna -p ~s || echo failed", [os:getpid()]),
+            "lsof -d \"0-9999999\" -lna -p ~ts || echo failed", [os:getpid()]),
     Res = os:cmd(Cmd),
     case string:right(Res, 7) of
         "failed\n" ->
@@ -104,90 +102,57 @@ get_used_fd({unix, _}, State0) ->
     end;
 
 %% handle.exe can be obtained from
-%% https://technet.microsoft.com/en-us/sysinternals/bb896655.aspx
-
-%% Output looks like:
-
-%% Handle v3.42
-%% Copyright (C) 1997-2008 Mark Russinovich
-%% Sysinternals - www.sysinternals.com
-%%
-%% Handle type summary:
-%%   ALPC Port       : 2
-%%   Desktop         : 1
-%%   Directory       : 1
-%%   Event           : 108
-%%   File            : 25
-%%   IoCompletion    : 3
-%%   Key             : 7
-%%   KeyedEvent      : 1
-%%   Mutant          : 1
-%%   Process         : 3
-%%   Process         : 38
-%%   Thread          : 41
-%%   Timer           : 3
-%%   TpWorkerFactory : 2
-%%   WindowStation   : 2
-%% Total handles: 238
-
-%% Nthandle v4.22 - Handle viewer
-%% Copyright (C) 1997-2019 Mark Russinovich
-%% Sysinternals - www.sysinternals.com
-%%
-%% Handle type summary:
-%%   <Unknown type>  : 1
-%%   <Unknown type>  : 166
-%%   ALPC Port       : 11
-%%   Desktop         : 1
-%%   Directory       : 2
-%%   Event           : 226
-%%   File            : 122
-%%   IoCompletion    : 8
-%%   IRTimer         : 6
-%%   Key             : 42
-%%   Mutant          : 7
-%%   Process         : 3
-%%   Section         : 2
-%%   Semaphore       : 43
-%%   Thread          : 36
-%%   TpWorkerFactory : 3
-%%   WaitCompletionPacket: 25
-%%   WindowStation   : 2
-%% Total handles: 706
-
+%% https://learn.microsoft.com/en-us/sysinternals/downloads/handle
 %% Note that the "File" number appears to include network sockets too; I assume
 %% that's the number we care about. Note also that if you omit "-s" you will
 %% see a list of file handles *without* network sockets. If you then add "-a"
 %% you will see a list of handles of various types, including network sockets
 %% shown as file handles to \Device\Afd.
-
 get_used_fd({win32, _}, State0) ->
-    Handle = rabbit_misc:os_cmd(
-               "handle.exe /accepteula -s -p " ++ os:getpid() ++ " 2> nul"),
-    case Handle of
-        [] ->
-            State1 = log_fd_error("Could not find handle.exe, please install from sysinternals", [], State0),
-            {State1, 0};
-        _  ->
-            case find_files_line(string:tokens(Handle, "\r\n")) of
-                unknown ->
-                    State1 = log_fd_error("handle.exe output did not contain "
-                                          "a line beginning with '  File ', unable "
-                                          "to determine used file descriptor "
-                                          "count: ~p", [Handle], State0),
-                    {State1, 0};
-                UsedFd ->
-                    {State0, UsedFd}
+    Pid = os:getpid(),
+    case os:find_executable("handle.exe") of
+        false ->
+            State1 = log_fd_warning_once("Could not find handle.exe, using powershell to determine handle count", [], State0),
+            UsedFd = get_used_fd_via_powershell(Pid),
+            {State1, UsedFd};
+        HandleExe ->
+            Args = ["/accepteula", "-s", "-p", Pid],
+            {ok, HandleExeOutput} = rabbit_misc:win32_cmd(HandleExe, Args),
+            case HandleExeOutput of
+                [] ->
+                    State1 = log_fd_warning_once("Could not execute handle.exe, using powershell to determine handle count", [], State0),
+                    UsedFd = get_used_fd_via_powershell(Pid),
+                    {State1, UsedFd};
+                _  ->
+                    case find_files_line(HandleExeOutput) of
+                        unknown ->
+                            State1 = log_fd_warning_once("handle.exe output did not contain "
+                                                         "a line beginning with 'File', using "
+                                                         "powershell to determine used file descriptor "
+                                                         "count: ~tp", [HandleExeOutput], State0),
+                            UsedFd = get_used_fd_via_powershell(Pid),
+                            {State1, UsedFd};
+                        UsedFd ->
+                            {State0, UsedFd}
+                    end
             end
     end.
 
 find_files_line([]) ->
     unknown;
-find_files_line(["  File " ++ Rest | _T]) ->
+% Note:
+% rabbit_misc:win32_cmd trims the output, so there will be no
+% leading/trailing whitespace
+find_files_line(["File " ++ Rest | _T]) ->
     [Files] = string:tokens(Rest, ": "),
     list_to_integer(Files);
 find_files_line([_H | T]) ->
     find_files_line(T).
+
+get_used_fd_via_powershell(Pid) ->
+    Cmd = "Get-Process -Id " ++ Pid ++ " | Select-Object -ExpandProperty HandleCount",
+    {ok, [Result]} = rabbit_misc:pwsh_cmd(Cmd),
+    list_to_integer(Result).
 
 -define(SAFE_CALL(Fun, NoProcFailResult),
     try
@@ -200,6 +165,13 @@ get_disk_free_limit() -> ?SAFE_CALL(rabbit_disk_monitor:get_disk_free_limit(),
 
 get_disk_free() -> ?SAFE_CALL(rabbit_disk_monitor:get_disk_free(),
                               disk_free_monitoring_disabled).
+
+log_fd_warning_once(Fmt, Args, #state{fd_warning_logged = undefined}=State) ->
+    % no warning has been logged, so log it and make a note of when
+    ok = rabbit_log:warning(Fmt, Args),
+    State#state{fd_warning_logged = true};
+log_fd_warning_once(_Fmt, _Args, #state{fd_warning_logged = true}=State) ->
+    State.
 
 log_fd_error(Fmt, Args, #state{error_logged_time = undefined}=State) ->
     % rabbitmq/rabbitmq-management#90
@@ -242,7 +214,7 @@ i(sockets_used, State) ->
 i(sockets_total, State) ->
     {State, proplists:get_value(sockets_limit, file_handle_cache:info([sockets_limit]))};
 i(os_pid, State) ->
-    {State, list_to_binary(os:getpid())};
+    {State, rabbit_data_coercion:to_utf8_binary(os:getpid())};
 i(mem_used, State) ->
     {State, vm_memory_monitor:get_process_memory()};
 i(mem_calculation_strategy, State) ->
@@ -275,11 +247,11 @@ i(rates_mode, State) ->
 i(exchange_types, State) ->
     {State, list_registry_plugins(exchange)};
 i(log_files, State) ->
-    {State, [list_to_binary(F) || F <- rabbit:log_locations()]};
+    {State, [rabbit_data_coercion:to_utf8_binary(F) || F <- rabbit:log_locations()]};
 i(db_dir, State) ->
-    {State, list_to_binary(rabbit_mnesia:dir())};
+    {State, rabbit_data_coercion:to_utf8_binary(rabbit:data_dir())};
 i(config_files, State) ->
-    {State, [list_to_binary(F) || F <- rabbit:config_files()]};
+    {State, [rabbit_data_coercion:to_utf8_binary(F) || F <- rabbit:config_files()]};
 i(net_ticktime, State) ->
     {State, net_kernel:get_net_ticktime()};
 i(persister_stats, State) ->
@@ -336,11 +308,11 @@ registry_plugin_enabled(Desc, Fun) ->
 
 format_application({Application, Description, Version}) ->
     [{name, Application},
-     {description, list_to_binary(Description)},
-     {version, list_to_binary(Version)}].
+     {description, rabbit_data_coercion:to_utf8_binary(Description)},
+     {version, rabbit_data_coercion:to_utf8_binary(Version)}].
 
 set_plugin_name(Name, Module) ->
-    [{name, list_to_binary(atom_to_list(Name))} |
+    [{name, atom_to_binary(Name, utf8)} |
      proplists:delete(name, Module:description())].
 
 persister_stats(#state{fhc_stats = FHC}) ->
@@ -350,40 +322,7 @@ flatten_key({A, B}) ->
     list_to_atom(atom_to_list(A) ++ "_" ++ atom_to_list(B)).
 
 cluster_links() ->
-    {ok, Items} = net_kernel:nodes_info(),
-    [Link || Item <- Items,
-             Link <- [format_nodes_info(Item)], Link =/= undefined].
-
-format_nodes_info({Node, Info}) ->
-    Owner = proplists:get_value(owner, Info),
-    case catch process_info(Owner, links) of
-        {links, Links} ->
-            case [Link || Link <- Links, is_port(Link)] of
-                [Port] ->
-                    {Node, Owner, format_nodes_info1(Port)};
-                _ ->
-                    undefined
-            end;
-        _ ->
-            undefined
-    end.
-
-format_nodes_info1(Port) ->
-    case {rabbit_net:socket_ends(Port, inbound),
-          rabbit_net:getstat(Port, [recv_oct, send_oct])} of
-        {{ok, {PeerAddr, PeerPort, SockAddr, SockPort}}, {ok, Stats}} ->
-            [{peer_addr, maybe_ntoab(PeerAddr)},
-             {peer_port, PeerPort},
-             {sock_addr, maybe_ntoab(SockAddr)},
-             {sock_port, SockPort},
-             {recv_bytes, pget(recv_oct, Stats)},
-             {send_bytes, pget(send_oct, Stats)}];
-        _ ->
-            []
-    end.
-
-maybe_ntoab(A) when is_tuple(A) -> list_to_binary(rabbit_misc:ntoab(A));
-maybe_ntoab(H)                  -> H.
+    rabbit_net:dist_info().
 
 %%--------------------------------------------------------------------
 
@@ -408,8 +347,8 @@ rabbit_web_dispatch_registry_list_all() ->
     end.
 
 format_context({Path, Description, Rest}) ->
-    [{description, list_to_binary(Description)},
-     {path,        list_to_binary("/" ++ Path)} |
+    [{description, rabbit_data_coercion:to_utf8_binary(Description)},
+     {path,        rabbit_data_coercion:to_utf8_binary("/" ++ Path)} |
      format_mochiweb_option_list(Rest)].
 
 format_mochiweb_option_list(C) ->
@@ -418,9 +357,9 @@ format_mochiweb_option_list(C) ->
 format_mochiweb_option(ssl_opts, V) ->
     format_mochiweb_option_list(V);
 format_mochiweb_option(_K, V) ->
-    case io_lib:printable_list(V) of
-        true  -> list_to_binary(V);
-        false -> list_to_binary(rabbit_misc:format("~w", [V]))
+    case io_lib:printable_unicode_list(V) of
+        true  -> rabbit_data_coercion:to_utf8_binary(V);
+        false -> rabbit_data_coercion:to_utf8_binary(rabbit_misc:format("~w", [V]))
     end.
 
 %%--------------------------------------------------------------------

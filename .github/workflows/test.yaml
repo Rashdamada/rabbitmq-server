@@ -2,7 +2,8 @@ name: Test
 on:
   push:
     branches:
-      - master
+      - main
+      - v3.11.x
       - v3.10.x
       - v3.9.x
       - v3.8.x
@@ -22,22 +23,25 @@ on:
       - '*.bazel'
       - .github/workflows/test.yaml
   pull_request:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
   test:
     name: Test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-20.04
     strategy:
       fail-fast: false
       matrix:
-        erlang_version:
-        - "23"
-        - "24"
+        otp_version_id:
+        - 25_0
+        - 25_2
     timeout-minutes: 120
     steps:
     - name: CHECKOUT REPOSITORY
       uses: actions/checkout@v3
     - name: MOUNT BAZEL CACHE
-      uses: actions/cache@v3.0.2
+      uses: actions/cache@v3.0.11
       with:
         path: "/home/runner/repo-cache/"
         key: repo-cache
@@ -51,7 +55,6 @@ jobs:
         cat << EOF >> user.bazelrc
           build:buildbuddy --build_metadata=ROLE=CI
           build:buildbuddy --build_metadata=VISIBILITY=PUBLIC
-          build:buildbuddy --remote_instance_name=buildbuddy-io/buildbuddy/ci-${{ matrix.erlang_version }}
           build:buildbuddy --repository_cache=/home/runner/repo-cache/
           build:buildbuddy --color=yes
           build:buildbuddy --disk_cache=
@@ -65,29 +68,32 @@ jobs:
         sudo sysctl -w net.ipv4.tcp_keepalive_time=60
         sudo ethtool -K eth0 tso off gso off gro off tx off rx off lro off
         bazelisk test //... \
-          --config=rbe-${{ matrix.erlang_version }} \
-          --test_tag_filters=-exclusive,-aws,-mixed-version-cluster \
+          --config=rbe-${{ matrix.otp_version_id }} \
+          --test_tag_filters=-exclusive,-aws,-docker,-mixed-version-cluster \
+          --build_tests_only \
           --verbose_failures
   test-exclusive:
     name: Test (Exclusive Tests)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-20.04
     strategy:
       fail-fast: false
       matrix:
-        erlang_version:
-        - "23"
-        - "24"
+        include:
+        - erlang_version: "25.0"
+          elixir_version: 1.14.0
+        - erlang_version: "25.2"
+          elixir_version: 1.14.0
     timeout-minutes: 60
     steps:
     - name: CHECKOUT REPOSITORY
       uses: actions/checkout@v3
     - name: CONFIGURE OTP & ELIXIR
-      uses: erlef/setup-beam@v1.11
+      uses: erlef/setup-beam@v1.15
       with:
         otp-version: ${{ matrix.erlang_version }}
-        elixir-version: 1.11.4
+        elixir-version: ${{ matrix.elixir_version }}
     - name: MOUNT BAZEL CACHE
-      uses: actions/cache@v3.0.2
+      uses: actions/cache@v3.0.11
       with:
         path: "/home/runner/repo-cache/"
         key: repo-cache
@@ -102,8 +108,7 @@ jobs:
         fi
         cat << EOF >> user.bazelrc
           build:buildbuddy --build_metadata=ROLE=CI
-          build:buildbuddy --build_metadata=VISIBILITY=PRIVATE
-          build:buildbuddy --remote_instance_name=buildbuddy-io/buildbuddy/ci-exclusive-${{ matrix.erlang_version }}
+          build:buildbuddy --build_metadata=VISIBILITY=PUBLIC
           build:buildbuddy --repository_cache=/home/runner/repo-cache/
           build:buildbuddy --color=yes
           build:buildbuddy --disk_cache=
@@ -118,7 +123,7 @@ jobs:
       run: |
         bazelisk test //... \
           --config=buildbuddy \
-          --test_tag_filters=exclusive,-aws,-mixed-version-cluster \
+          --test_tag_filters=exclusive,-aws,-docker,-mixed-version-cluster \
           --build_tests_only \
           --test_env RABBITMQ_CT_HELPERS_DELETE_UNUSED_NODES=true \
           --verbose_failures

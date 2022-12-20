@@ -44,7 +44,8 @@ groups() ->
        timeout_peer_properties_exchanged,
        unauthenticated_client_rejected_authenticating,
        timeout_authenticating,
-       timeout_close_sent]},
+       timeout_close_sent,
+       max_segment_size_bytes_validation]},
      %% Run `test_global_counters` on its own so the global metrics are
      %% initialised to 0 for each testcase
      {single_node_1, [], [test_global_counters]},
@@ -81,11 +82,6 @@ init_per_group(Group, Config)
                                                     {rabbit,
                                                      [{forced_feature_flags_on_init,
                                                        [classic_mirrored_queue_version,
-                                                        implicit_default_bindings,
-                                                        maintenance_mode_status,
-                                                        user_limits,
-                                                        virtual_host_metadata,
-                                                        quorum_queue,
                                                         stream_queue]}]})
                  end];
             _ ->
@@ -148,7 +144,8 @@ end_per_testcase(_Test, _Config) ->
     ok.
 
 test_global_counters(Config) ->
-    test_server(gen_tcp, Config),
+    Stream = atom_to_binary(?FUNCTION_NAME, utf8),
+    test_server(gen_tcp, Stream, Config),
     ?assertEqual(#{publishers => 0,
                    consumers => 0,
                    messages_confirmed_total => 2,
@@ -178,11 +175,13 @@ test_global_counters(Config) ->
     ok.
 
 test_stream(Config) ->
-    test_server(gen_tcp, Config),
+    Stream = atom_to_binary(?FUNCTION_NAME, utf8),
+    test_server(gen_tcp, Stream, Config),
     ok.
 
 test_stream_tls(Config) ->
-    test_server(ssl, Config),
+    Stream = atom_to_binary(?FUNCTION_NAME, utf8),
+    test_server(ssl, Stream, Config),
     ok.
 
 test_gc_consumers(Config) ->
@@ -298,7 +297,7 @@ sac_ff(Config) ->
     C = rabbit_stream_core:init(0),
     test_peer_properties(gen_tcp, S, C),
     test_authenticate(gen_tcp, S, C),
-    Stream = <<"stream1">>,
+    Stream = atom_to_binary(?FUNCTION_NAME, utf8),
     test_create_stream(gen_tcp, S, Stream, C),
     test_declare_publisher(gen_tcp, S, 1, Stream, C),
     ?awaitMatch(#{publishers := 1}, get_global_counters(Config), ?WAIT),
@@ -326,6 +325,29 @@ sac_ff(Config) ->
     closed = wait_for_socket_close(gen_tcp, S, 10),
     ok.
 
+max_segment_size_bytes_validation(Config) ->
+    Transport = gen_tcp,
+    Port = get_stream_port(Config),
+    {ok, S} =
+        Transport:connect("localhost", Port,
+                          [{active, false}, {mode, binary}]),
+    C0 = rabbit_stream_core:init(0),
+    C1 = test_peer_properties(Transport, S, C0),
+    C2 = test_authenticate(Transport, S, C1),
+    Stream = <<"stream-max-segment-size">>,
+    CreateStreamFrame =
+        rabbit_stream_core:frame({request, 1,
+                                  {create_stream, Stream,
+                                   #{<<"stream-max-segment-size-bytes">> =>
+                                         <<"3000000001">>}}}),
+    ok = Transport:send(S, CreateStreamFrame),
+    {Cmd, C3} = receive_commands(Transport, S, C2),
+    ?assertMatch({response, 1,
+                  {create_stream, ?RESPONSE_CODE_PRECONDITION_FAILED}},
+                 Cmd),
+    test_close(Transport, S, C3),
+    ok.
+
 consumer_count(Config) ->
     ets_count(Config, ?TABLE_CONSUMER).
 
@@ -351,12 +373,12 @@ java(Config) ->
                                 {"NODE1_STREAM_PORT=~b", [StreamPortNode1]},
                                 {"NODE1_STREAM_PORT_TLS=~b",
                                  [StreamPortTlsNode1]},
-                                {"NODE1_NAME=~p", [Node1Name]},
-                                {"NODE2_NAME=~p", [Node2Name]},
+                                {"NODE1_NAME=~tp", [Node1Name]},
+                                {"NODE2_NAME=~tp", [Node2Name]},
                                 {"NODE2_STREAM_PORT=~b", [StreamPortNode2]},
                                 {"NODE2_STREAM_PORT_TLS=~b",
                                  [StreamPortTlsNode2]},
-                                {"RABBITMQCTL=~p", [RabbitMqCtl]}]),
+                                {"RABBITMQCTL=~tp", [RabbitMqCtl]}]),
     {ok, _} = MakeResult.
 
 get_rabbitmqctl(Config) ->
@@ -382,7 +404,8 @@ get_node_name(Config) ->
 get_node_name(Config, Node) ->
     rabbit_ct_broker_helpers:get_node_config(Config, Node, nodename).
 
-test_server(Transport, Config) ->
+test_server(Transport, Stream, Config) ->
+    QName = rabbit_misc:r(<<"/">>, queue, Stream),
     Port =
         case Transport of
             gen_tcp ->
@@ -397,7 +420,6 @@ test_server(Transport, Config) ->
     C0 = rabbit_stream_core:init(0),
     C1 = test_peer_properties(Transport, S, C0),
     C2 = test_authenticate(Transport, S, C1),
-    Stream = <<"stream1">>,
     C3 = test_create_stream(Transport, S, Stream, C2),
     PublisherId = 42,
     ?assertMatch(#{publishers := 0}, get_global_counters(Config)),
@@ -410,10 +432,33 @@ test_server(Transport, Config) ->
     ?assertMatch(#{consumers := 0}, get_global_counters(Config)),
     C7 = test_subscribe(Transport, S, SubscriptionId, Stream, C6),
     ?awaitMatch(#{consumers := 1}, get_global_counters(Config), ?WAIT),
+    CounterKeys = maps:keys(get_osiris_counters(Config)),
+    %% find the counter key for the subscriber
+    {value, SubKey} = lists:search(fun ({rabbit_stream_reader, Q, Id, _}) ->
+                                           Q == QName andalso
+                                           Id == SubscriptionId;
+                                       (_) ->
+                                           false
+                                   end, CounterKeys),
     C8 = test_deliver(Transport, S, SubscriptionId, 0, Body, C7),
-    C9 = test_deliver(Transport, S, SubscriptionId, 1, Body, C8),
-    C10 = test_delete_stream(Transport, S, Stream, C9),
-    _C11 = test_close(Transport, S, C10),
+    C8b = test_deliver(Transport, S, SubscriptionId, 1, Body, C8),
+
+    C9 = test_unsubscribe(Transport, S, SubscriptionId, C8b),
+
+    %% assert the counter key got removed after unsubscribe
+    ?assertNot(maps:is_key(SubKey, get_osiris_counters(Config))),
+    %% exchange capabilities, which says we support deliver v2
+    %% the connection should adapt its deliver frame accordingly
+    C10 = test_exchange_command_versions(Transport, S, C9),
+    SubscriptionId2 = 43,
+    C11 = test_subscribe(Transport, S, SubscriptionId2, Stream, C10),
+    C12 = test_deliver_v2(Transport, S, SubscriptionId2, 0, Body, C11),
+    C13 = test_deliver_v2(Transport, S, SubscriptionId2, 1, Body, C12),
+
+    C14 = test_stream_stats(Transport, S, Stream, C13),
+
+    C15 = test_delete_stream(Transport, S, Stream, C14),
+    _C16 = test_close(Transport, S, C15),
     closed = wait_for_socket_close(Transport, S, 10),
     ok.
 
@@ -437,7 +482,7 @@ test_authenticate(Transport, S, C0) ->
         {response, _, {sasl_handshake, ?RESPONSE_CODE_OK, Mechanisms}} ->
             ?assertEqual([AmqPlain, Plain], lists:sort(Mechanisms));
         _ ->
-            ct:fail("invalid cmd ~p", [Cmd])
+            ct:fail("invalid cmd ~tp", [Cmd])
     end,
 
     Username = <<"guest">>,
@@ -535,6 +580,18 @@ test_subscribe(Transport,
     ?assertMatch({response, 1, {subscribe, ?RESPONSE_CODE_OK}}, Cmd),
     C.
 
+test_unsubscribe(Transport,
+                 Socket,
+                 SubscriptionId, C0) ->
+    UnsubCmd = {request, 1,
+                {unsubscribe, SubscriptionId}},
+    UnsubscribeFrame = rabbit_stream_core:frame(UnsubCmd),
+    ok = Transport:send(Socket, UnsubscribeFrame ),
+    {Cmd, C} = receive_commands(Transport, Socket, C0),
+    ?assertMatch({response, 1, {unsubscribe, ?RESPONSE_CODE_OK}}, Cmd),
+    C.
+
+
 test_deliver(Transport, S, SubscriptionId, COffset, Body, C0) ->
     ct:pal("test_deliver ", []),
     {{deliver, SubscriptionId, Chunk}, C} =
@@ -555,6 +612,53 @@ test_deliver(Transport, S, SubscriptionId, COffset, Body, C0) ->
       BodySize:31/unsigned,
       Body:BodySize/binary>> =
         Chunk,
+    C.
+
+test_deliver_v2(Transport, S, SubscriptionId, COffset, Body, C0) ->
+    ct:pal("test_deliver ", []),
+    {{deliver_v2, SubscriptionId, _CommittedOffset, Chunk}, C} =
+        receive_commands(Transport, S, C0),
+    <<5:4/unsigned,
+      0:4/unsigned,
+      0:8,
+      1:16,
+      1:32,
+      _Timestamp:64,
+      _Epoch:64,
+      COffset:64,
+      _Crc:32,
+      _DataLength:32,
+      _TrailerLength:32,
+      _ReservedBytes:32,
+      0:1,
+      BodySize:31/unsigned,
+      Body:BodySize/binary>> =
+        Chunk,
+    C.
+
+test_exchange_command_versions(Transport, S, C0) ->
+    ExCmd =
+        {request, 1,
+         {exchange_command_versions, [{deliver, ?VERSION_1, ?VERSION_2}]}},
+    ExFrame = rabbit_stream_core:frame(ExCmd),
+    ok = Transport:send(S, ExFrame),
+    {Cmd, C} = receive_commands(Transport, S, C0),
+    ?assertMatch({response, 1,
+                  {exchange_command_versions, ?RESPONSE_CODE_OK,
+                   [{declare_publisher, _, _} | _]}},
+                 Cmd),
+    C.
+
+test_stream_stats(Transport, S, Stream, C0) ->
+    SICmd = {request, 1, {stream_stats, Stream}},
+    SIFrame = rabbit_stream_core:frame(SICmd),
+    ok = Transport:send(S, SIFrame),
+    {Cmd, C} = receive_commands(Transport, S, C0),
+    ?assertMatch({response, 1,
+                  {stream_stats, ?RESPONSE_CODE_OK,
+                   #{<<"first_chunk_id">> := 0,
+                     <<"committed_chunk_id">> := 1}}},
+                 Cmd),
     C.
 
 test_close(Transport, S, C0) ->
@@ -598,6 +702,12 @@ receive_commands(Transport, S, C0) ->
             Res
     end.
 
+get_osiris_counters(Config) ->
+    rabbit_ct_broker_helpers:rpc(Config,
+                                 0,
+                                 osiris_counters,
+                                 overview,
+                                 []).
 get_global_counters(Config) ->
     maps:get([{protocol, stream}],
              rabbit_ct_broker_helpers:rpc(Config,

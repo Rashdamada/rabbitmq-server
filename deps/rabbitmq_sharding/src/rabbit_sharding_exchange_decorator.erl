@@ -7,16 +7,15 @@
 
 -module(rabbit_sharding_exchange_decorator).
 
+-include_lib("rabbit_common/include/rabbit.hrl").
+
 -rabbit_boot_step({?MODULE,
                    [{description, "sharding exchange decorator"},
                     {mfa, {rabbit_registry, register,
                            [exchange_decorator, <<"sharding">>, ?MODULE]}},
                     {cleanup, {rabbit_registry, unregister,
                                [exchange_decorator, <<"sharding">>]}},
-                    {requires, rabbit_registry},
-                    {enables, recovery}]}).
-
--include_lib("rabbit_common/include/rabbit.hrl").
+                    {requires, [rabbit_registry, recovery]}]}).
 
 -behaviour(rabbit_exchange_decorator).
 

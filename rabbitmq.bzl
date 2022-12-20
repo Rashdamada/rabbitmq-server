@@ -1,4 +1,8 @@
 load(
+    "@rules_erlang//:erlang_bytecode.bzl",
+    "erlang_bytecode",
+)
+load(
     "@rules_erlang//:erlang_app.bzl",
     "DEFAULT_ERLC_OPTS",
     "DEFAULT_TEST_ERLC_OPTS",
@@ -6,7 +10,7 @@ load(
     "test_erlang_app",
 )
 load(
-    "@rules_erlang//:ct_sharded.bzl",
+    "@rules_erlang//:ct.bzl",
     "ct_suite",
     "ct_suite_variant",
     _assert_suites = "assert_suites",
@@ -37,7 +41,7 @@ RABBITMQ_DIALYZER_OPTS = [
     "-Wunmatched_returns",
 ]
 
-APP_VERSION = "3.10.0"
+APP_VERSION = "3.12.0"
 
 BROKER_VERSION_REQUIREMENTS_ANY = """
 	{broker_version_requirements, []}
@@ -87,7 +91,10 @@ LABELS_WITH_TEST_VERSIONS = [
 ]
 
 def all_plugins(rabbitmq_workspace = "@rabbitmq-server"):
-    return [rabbitmq_workspace + p for p in ALL_PLUGINS]
+    return [
+        Label("{}{}".format(rabbitmq_workspace, p))
+        for p in ALL_PLUGINS
+    ]
 
 def with_test_versions(deps):
     r = []
@@ -107,6 +114,8 @@ def rabbitmq_app(
         app_env = "",
         app_extra_keys = "",
         extra_apps = [],
+        extra_hdrs = [],
+        extra_srcs = [],
         extra_priv = [],
         build_deps = [],
         deps = [],
@@ -118,12 +127,17 @@ def rabbitmq_app(
         app_module = app_module,
         app_registered = app_registered,
         app_env = app_env,
-        app_extra = app_extra_keys,
+        app_extra_keys = app_extra_keys,
         extra_apps = extra_apps,
+        extra_hdrs = extra_hdrs,
+        extra_srcs = extra_srcs,
         extra_priv = extra_priv,
         erlc_opts = select({
-            "//:debug_build": without("+deterministic", RABBITMQ_ERLC_OPTS),
+            "@rules_erlang//:debug_build": without("-Werror", without("+deterministic", RABBITMQ_ERLC_OPTS)),
             "//conditions:default": RABBITMQ_ERLC_OPTS,
+        }) + select({
+            Label("//:test_build"): ["-DTEST=1", "+nowarn_export_all"],
+            "//conditions:default": [],
         }),
         build_deps = build_deps,
         deps = deps,
@@ -137,11 +151,13 @@ def rabbitmq_app(
         app_module = app_module,
         app_registered = app_registered,
         app_env = app_env,
-        app_extra = app_extra_keys,
+        app_extra_keys = app_extra_keys,
         extra_apps = extra_apps,
+        extra_hdrs = extra_hdrs,
+        extra_srcs = extra_srcs,
         extra_priv = extra_priv,
         erlc_opts = select({
-            "//:debug_build": without("+deterministic", RABBITMQ_TEST_ERLC_OPTS),
+            "@rules_erlang//:debug_build": without("+deterministic", RABBITMQ_TEST_ERLC_OPTS),
             "//conditions:default": RABBITMQ_TEST_ERLC_OPTS,
         }),
         build_deps = with_test_versions(build_deps),
@@ -160,13 +176,13 @@ def rabbitmq_suite(erlc_opts = [], test_env = {}, **kwargs):
     )
     return kwargs["name"]
 
-def broker_for_integration_suites():
+def broker_for_integration_suites(extra_plugins = []):
     rabbitmq_home(
         name = "broker-for-tests-home",
         plugins = [
-            "//deps/rabbit:erlang_app",
-            ":erlang_app",
-        ],
+            "//deps/rabbit:test_erlang_app",
+            ":test_erlang_app",
+        ] + extra_plugins,
         testonly = True,
     )
 
@@ -174,6 +190,16 @@ def broker_for_integration_suites():
         name = "rabbitmq-for-tests-run",
         home = ":broker-for-tests-home",
         testonly = True,
+    )
+
+def rabbitmq_test_helper(
+        erlc_opts = RABBITMQ_TEST_ERLC_OPTS,
+        **kwargs):
+    erlang_bytecode(
+        testonly = True,
+        dest = "test",
+        erlc_opts = erlc_opts,
+        **kwargs
     )
 
 def rabbitmq_integration_suite(
@@ -201,7 +227,7 @@ def rabbitmq_integration_suite(
         suite_name = name,
         tags = tags + [STARTS_BACKGROUND_BROKER_TAG],
         erlc_opts = select({
-            "//:debug_build": without("+deterministic", RABBITMQ_TEST_ERLC_OPTS + erlc_opts),
+            "@rules_erlang//:debug_build": without("+deterministic", RABBITMQ_TEST_ERLC_OPTS + erlc_opts),
             "//conditions:default": RABBITMQ_TEST_ERLC_OPTS + erlc_opts,
         }),
         additional_hdrs = additional_hdrs,
@@ -220,7 +246,7 @@ def rabbitmq_integration_suite(
             ":rabbitmq-for-tests-run",
         ] + tools,
         runtime_deps = [
-            "//deps/rabbitmq_cli:elixir_app",
+            "//bazel/elixir:erlang_app",
             "//deps/rabbitmq_cli:rabbitmqctl",
             "//deps/rabbitmq_ct_client_helpers:erlang_app",
         ] + runtime_deps,
@@ -235,20 +261,31 @@ def rabbitmq_integration_suite(
         data = data,
         test_env = dict({
             "SKIP_MAKE_TEST_DIST": "true",
-            "RABBITMQ_FEATURE_FLAGS": "",
+            # The feature flags listed below are required. This means they must
+            # be enabled in mixed-version testing before even starting cluster
+            # because newer node don't have the corresponding
+            # compatibility/migration code.
+            #
+            # Starting from 3.11.0:
+            #   quorum_queue
+            #   implicit_default_bindings
+            #   virtual_host_metadata
+            #   maintenance_mode_status
+            #   user_limits
+            "RABBITMQ_FEATURE_FLAGS": "quorum_queue,implicit_default_bindings,virtual_host_metadata,maintenance_mode_status,user_limits",
             "RABBITMQ_RUN": "$TEST_SRCDIR/$TEST_WORKSPACE/{}/rabbitmq-for-tests-run".format(package),
             "RABBITMQCTL": "$TEST_SRCDIR/$TEST_WORKSPACE/{}/broker-for-tests-home/sbin/rabbitmqctl".format(package),
             "RABBITMQ_PLUGINS": "$TEST_SRCDIR/$TEST_WORKSPACE/{}/broker-for-tests-home/sbin/rabbitmq-plugins".format(package),
             "RABBITMQ_QUEUES": "$TEST_SRCDIR/$TEST_WORKSPACE/{}/broker-for-tests-home/sbin/rabbitmq-queues".format(package),
-            "RABBITMQ_RUN_SECONDARY": "$TEST_SRCDIR/rabbitmq-server-generic-unix-3.9/rabbitmq-run",
+            "RABBITMQ_RUN_SECONDARY": "$TEST_SRCDIR/.secondary_umbrella.rabbitmq-server-generic-unix-3.11/rabbitmq-run",
             "LANG": "C.UTF-8",
         }.items() + test_env.items()),
         tools = [
             ":rabbitmq-for-tests-run",
-            "@rabbitmq-server-generic-unix-3.9//:rabbitmq-run",
+            "@rabbitmq-server-generic-unix-3.11//:rabbitmq-run",
         ] + tools,
         runtime_deps = [
-            "//deps/rabbitmq_cli:elixir_app",
+            "//bazel/elixir:erlang_app",
             "//deps/rabbitmq_cli:rabbitmqctl",
             "//deps/rabbitmq_ct_client_helpers:erlang_app",
         ] + runtime_deps,

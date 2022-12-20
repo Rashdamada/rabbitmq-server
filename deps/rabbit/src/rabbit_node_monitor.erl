@@ -70,13 +70,13 @@ cluster_status_filename() ->
     filename:join(rabbit_mnesia:dir(), "cluster_nodes.config").
 
 coordination_filename() ->
-    filename:join(rabbit_mnesia:dir(), "coordination").
+    filename:join(rabbit:data_dir(), "coordination").
 
 quorum_filename() ->
     ra_env:data_dir().
 
 default_quorum_filename() ->
-    filename:join(rabbit_mnesia:dir(), "quorum").
+    filename:join(rabbit:data_dir(), "quorum").
 
 -spec prepare_cluster_status_files() -> 'ok' | no_return().
 
@@ -276,13 +276,13 @@ pause_if_all_down_guard(PreferredNodes, LastNodes, LastState) ->
 %% state, causing global:sync/0 to never return.
 %%
 %%     1. A process is spawned.
-%%     2. If after 15", global:sync() didn't return, the "global"
+%%     2. If after 10", global:sync() didn't return, the "global"
 %%        state is parsed.
 %%     3. If it detects that a sync is blocked for more than 10",
 %%        the process sends fake nodedown/nodeup events to the two
 %%        nodes involved (one local, one remote).
 %%     4. Both "global" instances restart their synchronisation.
-%%     5. globao:sync() finally returns.
+%%     5. global:sync() finally returns.
 %%
 %% FIXME: Remove this workaround, once we got rid of the change to
 %% "dist_auto_connect" and fixed the bugs uncovered.
@@ -297,19 +297,22 @@ workaround_global_hang() ->
     receive
         global_sync_done ->
             ok
-    after 10000 ->
+    after 10_000 ->
             find_blocked_global_peers()
     end.
 
 find_blocked_global_peers() ->
     Snapshot1 = snapshot_global_dict(),
-    timer:sleep(10000),
+    timer:sleep(10_000),
     Snapshot2 = snapshot_global_dict(),
+    logger:debug("global's sync tags 10s ago: ~p~n"
+                 "global's sync tags now: ~p",
+                 [Snapshot1, Snapshot2]),
     find_blocked_global_peers1(Snapshot2, Snapshot1).
 
 snapshot_global_dict() ->
-    {status, _, _, [Dict | _]} = sys:get_status(global_name_server),
-    [E || {{sync_tag_his, _}, _} = E <- Dict].
+    {status, _Pid, _Mod, [PDict | _]} = sys:get_status(global_name_server),
+    [E || {{sync_tag_his, _}, _} = E <- PDict].
 
 find_blocked_global_peers1([{{sync_tag_his, Peer}, _} = Item | Rest],
   OlderSnapshot) ->
@@ -323,19 +326,48 @@ find_blocked_global_peers1([], _) ->
 
 unblock_global_peer(PeerNode) ->
     ThisNode = node(),
-    PeerState = rpc:call(PeerNode, sys, get_status, [global_name_server]),
+
+    PeerState = erpc:call(PeerNode, sys, get_state, [global_name_server]),
+    ThisState = sys:get_state(global_name_server),
+    PeerToThisCid = connection_id(PeerState, ThisNode),
+    ThisToPeerCid = connection_id(ThisState, PeerNode),
+
     logger:info(
-      "Global hang workaround: global state on ~s seems broken~n"
-      " * Peer global state:  ~p~n"
-      " * Local global state: ~p~n"
-      "Faking nodedown/nodeup between ~s and ~s",
-      [PeerNode, PeerState, sys:get_status(global_name_server),
-       PeerNode, ThisNode]),
-    {global_name_server, ThisNode} ! {nodedown, PeerNode},
-    {global_name_server, PeerNode} ! {nodedown, ThisNode},
-    {global_name_server, ThisNode} ! {nodeup, PeerNode},
-    {global_name_server, PeerNode} ! {nodeup, ThisNode},
+      "global hang workaround: faking nodedown / nodeup between peer node ~s "
+      "(connection ID to us: ~p) and our node ~s (connection ID to peer: ~p)",
+      [PeerNode, PeerToThisCid, ThisNode, ThisToPeerCid]),
+    logger:debug(
+      "peer global state: ~tp~nour global state: ~tp",
+      [erpc:call(PeerNode, sys, get_status, [global_name_server]),
+       sys:get_status(global_name_server)]),
+
+    {ThisDownMsg, ThisUpMsg} = messages(ThisToPeerCid, PeerNode),
+    {PeerDownMsg, PeerUpMsg} = messages(PeerToThisCid, ThisNode),
+    {global_name_server, ThisNode} ! ThisDownMsg,
+    {global_name_server, PeerNode} ! PeerDownMsg,
+    {global_name_server, ThisNode} ! ThisUpMsg,
+    {global_name_server, PeerNode} ! PeerUpMsg,
     ok.
+
+connection_id(State, Node) ->
+    case element(3, State) of
+        #{{connection_id, Node} := ConnectionId} ->
+            ConnectionId;
+        _ ->
+            undefined
+    end.
+
+%% The nodedown and nodeup message format handled by global differs due to
+%% https://github.com/erlang/otp/commit/9274e89857d294f85702e0d5d42fb196e8e12d6a
+messages(undefined, Node) ->
+    %% OTP < 25.1
+    {{nodedown, Node},
+     {nodeup, Node}};
+messages(ConnectionId, Node) ->
+    %% OTP >= 25.1
+    Cid = #{connection_id => ConnectionId},
+    {{nodedown, Node, Cid},
+     {nodeup, Node, Cid}}.
 
 %%----------------------------------------------------------------------------
 %% gen_server callbacks
@@ -442,13 +474,13 @@ handle_cast({check_partial_partition, Node, Rep, NodeGUID, MyGUID, RepGUID},
                                {badrpc, _} -> ok;
                                NodeGUID ->
                                    rabbit_log:warning("Received a 'DOWN' message"
-                                                      " from ~p but still can"
+                                                      " from ~tp but still can"
                                                       " communicate with it ",
                                                       [Node]),
                                    cast(Rep, {partial_partition,
                                                          Node, node(), RepGUID});
                                 _ ->
-                                   rabbit_log:warning("Node ~p was restarted", [Node]),
+                                   rabbit_log:warning("Node ~tp was restarted", [Node]),
                                    ok
                            end
                    end);
@@ -473,8 +505,8 @@ handle_cast({check_partial_partition, _Node, _Reporter,
 handle_cast({partial_partition, NotReallyDown, Proxy, MyGUID},
             State = #state{guid = MyGUID}) ->
     FmtBase = "Partial partition detected:~n"
-        " * We saw DOWN from ~s~n"
-        " * We can still see ~s which can see ~s~n",
+        " * We saw DOWN from ~ts~n"
+        " * We can still see ~ts which can see ~ts~n",
     ArgsBase = [NotReallyDown, Proxy, NotReallyDown],
     case application:get_env(rabbit, cluster_partition_handling) of
         {ok, pause_minority} ->
@@ -488,7 +520,7 @@ handle_cast({partial_partition, NotReallyDown, Proxy, MyGUID},
             case in_preferred_partition(PreferredNodes) of
                 true  -> rabbit_log:error(
                            FmtBase ++ "We will therefore intentionally "
-                           "disconnect from ~s", ArgsBase ++ [Proxy]),
+                           "disconnect from ~ts", ArgsBase ++ [Proxy]),
                          upgrade_to_full_partition(Proxy);
                 false -> rabbit_log:info(
                            FmtBase ++ "We are about to pause, no need "
@@ -497,7 +529,7 @@ handle_cast({partial_partition, NotReallyDown, Proxy, MyGUID},
             {noreply, State};
         {ok, _} ->
             rabbit_log:error(
-              FmtBase ++ "We will therefore intentionally disconnect from ~s",
+              FmtBase ++ "We will therefore intentionally disconnect from ~ts",
               ArgsBase ++ [Proxy]),
             upgrade_to_full_partition(Proxy),
             {noreply, State}
@@ -510,7 +542,7 @@ handle_cast({partial_partition, _GUID, _Reporter, _Proxy}, State) ->
 %% messages reliably when another node disconnects from us. Therefore
 %% we are told just before the disconnection so we can reciprocate.
 handle_cast({partial_partition_disconnect, Other}, State) ->
-    rabbit_log:error("Partial partition disconnect from ~s", [Other]),
+    rabbit_log:error("Partial partition disconnect from ~ts", [Other]),
     disconnect(Other),
     {noreply, State};
 
@@ -519,7 +551,7 @@ handle_cast({partial_partition_disconnect, Other}, State) ->
 %% mnesia propagation.
 handle_cast({node_up, Node, NodeType},
             State = #state{monitors = Monitors}) ->
-    rabbit_log:info("rabbit on node ~p up", [Node]),
+    rabbit_log:info("rabbit on node ~tp up", [Node]),
     {AllNodes, DiscNodes, RunningNodes} = read_cluster_status(),
     write_cluster_status({add_node(Node, AllNodes),
                           case NodeType of
@@ -544,7 +576,7 @@ handle_cast({joined_cluster, Node, NodeType}, State) ->
                               ram  -> DiscNodes
                           end,
                           RunningNodes}),
-    rabbit_log:debug("Node '~p' has joined the cluster", [Node]),
+    rabbit_log:debug("Node '~tp' has joined the cluster", [Node]),
     rabbit_event:notify(node_added, [{node, Node}]),
     {noreply, State};
 
@@ -565,7 +597,7 @@ handle_cast(_Msg, State) ->
 
 handle_info({'DOWN', _MRef, process, {rabbit, Node}, _Reason},
             State = #state{monitors = Monitors, subscribers = Subscribers}) ->
-    rabbit_log:info("rabbit on node ~p down", [Node]),
+    rabbit_log:info("rabbit on node ~tp down", [Node]),
     {AllNodes, DiscNodes, RunningNodes} = read_cluster_status(),
     write_cluster_status({AllNodes, DiscNodes, del_node(Node, RunningNodes)}),
     [P ! {node_down, Node} || P <- pmon:monitored(Subscribers)],
@@ -579,7 +611,7 @@ handle_info({'DOWN', _MRef, process, Pid, _Reason},
 
 handle_info({nodedown, Node, Info}, State = #state{guid       = MyGUID,
                                                    node_guids = GUIDs}) ->
-    rabbit_log:info("node ~p down: ~p",
+    rabbit_log:info("node ~tp down: ~tp",
                     [Node, proplists:get_value(nodedown_reason, Info)]),
     Check = fun (N, CheckGUID, DownGUID) ->
                     cast(N, {check_partial_partition,
@@ -597,7 +629,7 @@ handle_info({nodedown, Node, Info}, State = #state{guid       = MyGUID,
     {noreply, handle_dead_node(Node, State)};
 
 handle_info({nodeup, Node, _Info}, State) ->
-    rabbit_log:info("node ~p up", [Node]),
+    rabbit_log:info("node ~tp up", [Node]),
     {noreply, State};
 
 handle_info({mnesia_system_event,
@@ -700,7 +732,7 @@ handle_dead_node(Node, State = #state{autoheal = Autoheal}) ->
         {ok, autoheal} ->
             State#state{autoheal = rabbit_autoheal:node_down(Node, Autoheal)};
         {ok, Term} ->
-            rabbit_log:warning("cluster_partition_handling ~p unrecognised, "
+            rabbit_log:warning("cluster_partition_handling ~tp unrecognised, "
                                "assuming 'ignore'", [Term]),
             State
     end.
@@ -758,7 +790,7 @@ do_run_outside_app_fun(Fun) ->
         Fun()
     catch _:E:Stacktrace ->
             rabbit_log:error(
-              "rabbit_outside_app_process:~n~p~n~p",
+              "rabbit_outside_app_process:~n~tp~n~tp",
               [E, Stacktrace])
     end.
 
@@ -775,10 +807,10 @@ handle_dead_rabbit(Node, State = #state{partitions = Partitions,
     %% TODO: This may turn out to be a performance hog when there are
     %% lots of nodes.  We really only need to execute some of these
     %% statements on *one* node, rather than all of them.
-    ok = rabbit_networking:on_node_down(Node),
     ok = rabbit_amqqueue:on_node_down(Node),
     ok = rabbit_alarm:on_node_down(Node),
     ok = rabbit_mnesia:on_node_down(Node),
+    ok = rabbit_networking:on_node_down(Node),
     %% If we have been partitioned, and we are now in the only remaining
     %% partition, we no longer care about partitions - forget them. Note
     %% that we do not attempt to deal with individual (other) partitions
@@ -937,5 +969,5 @@ possibly_partitioned_nodes() ->
 startup_log([]) ->
     rabbit_log:info("Starting rabbit_node_monitor", []);
 startup_log(Nodes) ->
-    rabbit_log:info("Starting rabbit_node_monitor, might be partitioned from ~p",
+    rabbit_log:info("Starting rabbit_node_monitor, might be partitioned from ~tp",
                     [Nodes]).

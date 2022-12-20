@@ -1,4 +1,4 @@
-load("@rules_erlang//:xref.bzl", "xref")
+load("@rules_erlang//:xref2.bzl", "xref")
 load("@rules_erlang//:dialyze.bzl", "dialyze", "plt")
 load(
     "//:rabbitmq.bzl",
@@ -46,8 +46,7 @@ rabbitmq_app(
 )
 
 xref(
-    size = "small",
-    tags = ["xref"],
+    additional_libs = BUILD_DEPS,
 )
 
 plt(
@@ -61,7 +60,6 @@ dialyze(
     size = "medium",
     dialyzer_opts = RABBITMQ_DIALYZER_OPTS + ["-Wno_undefined_callbacks"],
     plt = ":base_plt",
-    tags = ["dialyze"],
     warnings_as_errors = False,
 )
 
@@ -82,6 +80,9 @@ suites = [
         PACKAGE,
         name = "command_SUITE",
         size = "medium",
+        runtime_deps = [
+            "//deps/amqp10_client:erlang_app",
+        ],
         deps = [
             "//deps/amqp10_common:erlang_app",
         ],
@@ -97,10 +98,15 @@ suites = [
         flaky = True,
         tags = [
             "dotnet",
+            "exclusive",
         ],
         test_env = {
             "TMPDIR": "$TEST_TMPDIR",
         },
+    ),
+    rabbitmq_integration_suite(
+        PACKAGE,
+        name = "config_schema_SUITE",
     ),
     rabbitmq_suite(
         name = "unit_SUITE",

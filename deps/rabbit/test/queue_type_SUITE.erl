@@ -54,30 +54,24 @@ init_per_group(Group, Config) ->
     Config2 = rabbit_ct_helpers:run_steps(Config1b,
                                           [fun merge_app_env/1 ] ++
                                           rabbit_ct_broker_helpers:setup_steps()),
-    case rabbit_ct_broker_helpers:enable_feature_flag(Config2, quorum_queue) of
-        ok ->
-            ok = rabbit_ct_broker_helpers:rpc(
-                   Config2, 0, application, set_env,
-                   [rabbit, channel_tick_interval, 100]),
-            %% HACK: the larger cluster sizes benefit for a bit more time
-            %% after clustering before running the tests.
-            Config3 = case Group of
-                          cluster_size_5 ->
-                              timer:sleep(5000),
-                              Config2;
-                          _ ->
-                              Config2
-                      end,
+    ok = rabbit_ct_broker_helpers:rpc(
+           Config2, 0, application, set_env,
+           [rabbit, channel_tick_interval, 100]),
+    %% HACK: the larger cluster sizes benefit for a bit more time
+    %% after clustering before running the tests.
+    Config3 = case Group of
+                  cluster_size_5 ->
+                      timer:sleep(5000),
+                      Config2;
+                  _ ->
+                      Config2
+              end,
 
-            rabbit_ct_broker_helpers:set_policy(
-              Config3, 0,
-              <<"ha-policy">>, <<".*">>, <<"queues">>,
-              [{<<"ha-mode">>, <<"all">>}]),
-            Config3;
-        Skip ->
-            end_per_group(Group, Config2),
-            Skip
-    end.
+    rabbit_ct_broker_helpers:set_policy(
+      Config3, 0,
+      <<"ha-policy">>, <<".*">>, <<"queues">>,
+      [{<<"ha-mode">>, <<"all">>}]),
+    Config3.
 
 merge_app_env(Config) ->
     rabbit_ct_helpers:merge_app_env(
@@ -193,6 +187,15 @@ smoke(Config) ->
                    messages_get_empty_total => 2,
                    messages_redelivered_total => 1
                   }, ProtocolQueueTypeCounters),
+
+
+    ok = rabbit_ct_client_helpers:close_channel(Ch),
+
+    ?assertMatch(
+       #{consumers := 0,
+         publishers := 0},
+       maps:get([{protocol, amqp091}], get_global_counters(Config))),
+
     ok.
 
 ack_after_queue_delete(Config) ->
@@ -244,7 +247,7 @@ publish(Ch, Queue, Msg) ->
 
 publish_and_confirm(Ch, Queue, Msg) ->
     publish(Ch, Queue, Msg),
-    ct:pal("waiting for ~s message confirmation from ~s", [Msg, Queue]),
+    ct:pal("waiting for ~ts message confirmation from ~ts", [Msg, Queue]),
     ok = receive
              #'basic.ack'{}  -> ok;
              #'basic.nack'{} -> fail
@@ -292,7 +295,7 @@ basic_nack(Ch, DTag) ->
 flush() ->
     receive
         Any ->
-            ct:pal("flush ~p", [Any]),
+            ct:pal("flush ~tp", [Any]),
             flush()
     after 0 ->
               ok

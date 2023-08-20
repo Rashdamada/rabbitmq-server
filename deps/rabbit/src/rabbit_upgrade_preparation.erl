@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_upgrade_preparation).
@@ -32,15 +32,39 @@ await_online_synchronised_mirrors(Timeout) ->
 %% Implementation
 %%
 
+online_members(Component) ->
+    lists:filter(fun erlang:is_pid/1,
+                 rabbit_misc:append_rpc_all_nodes(rabbit_nodes:list_running(),
+                                                  erlang, whereis, [Component])).
+
+endangered_critical_components() ->
+    CriticalComponents = [rabbit_stream_coordinator],
+    Nodes = rabbit_nodes:list_members(),
+    lists:filter(fun (Component) ->
+                         NumAlive = length(online_members(Component)),
+                         ServerIds = lists:zip(lists:duplicate(length(Nodes), Component), Nodes),
+                         case ra:members(ServerIds) of
+                             {error, _E} ->
+                                 %% we've asked all nodes about it; if we didn't get an answer,
+                                 %% the component is probably not running at all
+                                 %% (eg. rabbit_stream_coordinator is only started when the
+                                 %% first straem is declared)
+                                 false;
+                             {ok, Members, _Leader} ->
+                                 NumAlive =< (length(Members) div 2) + 1
+                         end
+                 end,
+                 CriticalComponents).
+
 do_await_safe_online_quorum(0) ->
     false;
 do_await_safe_online_quorum(IterationsLeft) ->
     EndangeredQueues = lists:append(
                          rabbit_quorum_queue:list_with_minimum_quorum(),
                          rabbit_stream_queue:list_with_minimum_quorum()),
-    case EndangeredQueues of
-        []  -> true;
-        List when is_list(List) ->
+    case EndangeredQueues =:= [] andalso endangered_critical_components() =:= [] of
+        true -> true;
+        false ->
             timer:sleep(?SAMPLING_INTERVAL),
             do_await_safe_online_quorum(IterationsLeft - 1)
     end.
@@ -69,4 +93,10 @@ list_with_minimum_quorum_for_cli() ->
            <<"virtual_host">> => amqqueue:get_vhost(Q),
            <<"type">> => amqqueue:get_type(Q)
           }
-     end || Q <- EndangeredQueues].
+     end || Q <- EndangeredQueues] ++
+    [#{
+           <<"readable_name">> => C,
+           <<"name">> => C,
+           <<"virtual_host">> => "-",
+           <<"type">> => process
+      } || C <- endangered_critical_components()].

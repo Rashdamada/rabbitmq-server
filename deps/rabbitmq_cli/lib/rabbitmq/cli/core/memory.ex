@@ -2,7 +2,7 @@
 ## License, v. 2.0. If a copy of the MPL was not distributed with this
 ## file, You can obtain one at https://mozilla.org/MPL/2.0/.
 ##
-## Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+## Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 
 defmodule RabbitMQ.CLI.Core.Memory do
   alias RabbitMQ.CLI.InformationUnit, as: IU
@@ -90,7 +90,7 @@ defmodule RabbitMQ.CLI.Core.Memory do
   end
 
   def parse_watermark(n) when is_bitstring(n) do
-    case IU.parse(n) do
+    case IU.parse(to_charlist(n)) do
       {:ok, parsed} -> parsed
       err -> err
     end

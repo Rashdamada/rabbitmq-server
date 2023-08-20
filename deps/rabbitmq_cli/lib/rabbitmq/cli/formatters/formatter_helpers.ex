@@ -2,7 +2,7 @@
 ## License, v. 2.0. If a copy of the MPL was not distributed with this
 ## file, You can obtain one at https://mozilla.org/MPL/2.0/.
 ##
-## Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+## Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 
 defmodule RabbitMQ.CLI.Formatters.FormatterHelpers do
   import RabbitCommon.Records
@@ -48,10 +48,12 @@ defmodule RabbitMQ.CLI.Formatters.FormatterHelpers do
   def format_info_item(item, escaped \\ true)
 
   def format_info_item(map, escaped) when is_map(map) do
+    kv = to_predictably_ordered_keyword_list(map)
+
     [
       "\#\{",
       Enum.map(
-        map,
+        kv,
         fn {k, v} ->
           ["#{escape(k, escaped)} => ", format_info_item(v, escaped)]
         end
@@ -123,6 +125,14 @@ defmodule RabbitMQ.CLI.Formatters.FormatterHelpers do
 
   def format_info_item(value, _escaped) do
     :io_lib.format("~1000000000000tp", [value])
+  end
+
+  @spec to_predictably_ordered_keyword_list(Enumerable.t()) :: Keyword.t()
+  def to_predictably_ordered_keyword_list(input0) do
+    case input0 do
+      m when is_map(m) -> Enum.sort(Keyword.new(m))
+      other -> other
+    end
   end
 
   defp prettify_amqp_table(table, escaped) do

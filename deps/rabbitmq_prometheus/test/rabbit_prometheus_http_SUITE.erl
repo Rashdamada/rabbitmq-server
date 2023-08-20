@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_prometheus_http_SUITE).
@@ -18,19 +18,22 @@ all() ->
     [
         {group, default_config},
         {group, config_path},
+        {group, global_labels},
         {group, aggregated_metrics},
         {group, per_object_metrics},
         {group, per_object_endpoint_metrics},
         {group, commercial},
-        {group, detailed_metrics}
+        {group, detailed_metrics},
+        {group, authentication}
     ].
 
 groups() ->
     [
         {default_config, [], generic_tests()},
         {config_path, [], generic_tests()},
+        {global_labels, [], generic_tests()},
         {aggregated_metrics, [], [
-            aggregated_metrics_test,
+                                  aggregated_metrics_test,
             specific_erlang_metrics_present_test,
             global_metrics_present_test,
             global_metrics_single_metric_family_test
@@ -58,12 +61,13 @@ groups() ->
                                      vhost_status_metric,
                                      exchange_bindings_metric,
                                      exchange_names_metric
-        ]}
+        ]},
+       {authentication, [], [basic_auth]}
     ].
 
 generic_tests() ->
     [
-        get_test,
+     get_test,
         content_type_test,
         encoding_test,
         gzip_encoding_test,
@@ -80,6 +84,10 @@ init_per_group(config_path, Config0) ->
     PathConfig = {rabbitmq_prometheus, [{path, "/bunnieshop"}]},
     Config1 = rabbit_ct_helpers:merge_app_env(Config0, PathConfig),
     init_per_group(config_path, Config1, [{prometheus_path, "/bunnieshop"}]);
+init_per_group(global_labels, Config0) ->
+    GlobalLabelsConfig = {prometheus, [{global_labels, [{"foo", "bar"}]}]},
+    Config1 = rabbit_ct_helpers:merge_app_env(Config0, GlobalLabelsConfig),
+    init_per_group(aggregated_metrics, Config1);
 init_per_group(per_object_metrics, Config0) ->
     PathConfig = {rabbitmq_prometheus, [{return_per_object_metrics, true}]},
     Config1 = rabbit_ct_helpers:merge_app_env(Config0, PathConfig),
@@ -196,7 +204,14 @@ init_per_group(aggregated_metrics, Config0) ->
 init_per_group(commercial, Config0) ->
     ProductConfig = {rabbit, [{product_name, "WolfMQ"}, {product_version, "2020"}]},
     Config1 = rabbit_ct_helpers:merge_app_env(Config0, ProductConfig),
-    init_per_group(commercial, Config1, []).
+    init_per_group(commercial, Config1, []);
+
+init_per_group(authentication, Config) ->
+    Config1 = rabbit_ct_helpers:merge_app_env(
+                Config, {rabbitmq_prometheus, [{authentication, [{enabled, true}]}]}),
+    init_per_group(authentication, Config1, []).
+
+
 
 init_per_group(Group, Config0, Extra) ->
     rabbit_ct_helpers:log_environment(),
@@ -236,7 +251,10 @@ end_per_group(detailed_metrics, Config) ->
 
     %% Delete queues?
     end_per_group_(Config);
-
+end_per_group(authentication, Config) ->
+    ok = rabbit_ct_broker_helpers:rpc(Config, 0, application, unset_env,
+                                      [rabbitmq_prometheus, authentication]),
+    end_per_group_(Config);
 end_per_group(_, Config) ->
     end_per_group_(Config).
 
@@ -541,6 +559,25 @@ exchange_names_metric(Config) ->
                     #{vhost=>"/",exchange=>"default-queue-with-consumer-direct-exchange",type=>"direct"} => [1]
                   }, Names),
     ok.
+
+
+basic_auth(Config) ->
+    http_get(Config, [{"accept-encoding", "deflate"}], 401),
+    AuthHeader = rabbit_mgmt_test_util:auth_header("guest", "guest"),
+    http_get(Config, [{"accept-encoding", "deflate"}, AuthHeader], 200),
+
+    rabbit_ct_broker_helpers:add_user(Config, <<"monitor">>),
+    rabbit_ct_broker_helpers:set_user_tags(Config, 0, <<"monitor">>, [monitoring]),
+    MonAuthHeader = rabbit_mgmt_test_util:auth_header("monitor", "monitor"),
+    http_get(Config, [{"accept-encoding", "deflate"}, MonAuthHeader], 200),
+
+    rabbit_ct_broker_helpers:add_user(Config, <<"management">>),
+    rabbit_ct_broker_helpers:set_user_tags(Config, 0, <<"management">>, [management]),
+    MgmtAuthHeader = rabbit_mgmt_test_util:auth_header("management", "management"),
+    http_get(Config, [{"accept-encoding", "deflate"}, MgmtAuthHeader], 401),
+
+    rabbit_ct_broker_helpers:delete_user(Config, <<"monitor">>),
+    rabbit_ct_broker_helpers:delete_user(Config, <<"management">>).
 
 
 http_get(Config, ReqHeaders, CodeExp) ->

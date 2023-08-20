@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_mgmt_wm_connection_user_name).
@@ -44,8 +44,8 @@ delete_resource({ok, Username, UserConns}, ReqData, Context) ->
 
 is_authorized(ReqData, Context) ->
     try
-        UserConns = list_user_connections(ReqData),
-        rabbit_mgmt_util:is_authorized_user(ReqData, Context, UserConns)
+        {ok, Username, _UserConns} = list_user_connections(ReqData),
+        rabbit_mgmt_util:is_authorized_user(ReqData, Context, [{user, Username}])
     catch
         {error, invalid_range_parameters, Reason} ->
             rabbit_mgmt_util:bad_request(iolist_to_binary(Reason), ReqData, Context)

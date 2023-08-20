@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_stomp_sup).
@@ -45,8 +45,8 @@ init([{Listeners, SslListeners0}, Configuration]) ->
                           SslListeners)}}.
 
 stop_listeners() ->
-    rabbit_networking:stop_ranch_listener_of_protocol(?TCP_PROTOCOL),
-    rabbit_networking:stop_ranch_listener_of_protocol(?TLS_PROTOCOL),
+    _ = rabbit_networking:stop_ranch_listener_of_protocol(?TCP_PROTOCOL),
+    _ = rabbit_networking:stop_ranch_listener_of_protocol(?TLS_PROTOCOL),
     ok.
 
 %%

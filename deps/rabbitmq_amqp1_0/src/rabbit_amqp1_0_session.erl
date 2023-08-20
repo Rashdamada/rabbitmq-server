@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_amqp1_0_session).
@@ -14,7 +14,7 @@
          incr_incoming_id/1, next_delivery_id/1, transfers_left/1,
          record_transfers/2, bump_outgoing_window/1,
          record_outgoing/4, settle/3, flow_fields/2, channel/1,
-         flow/2, ack/2, validate_attach/1]).
+         flow/2, ack/2, return/2, validate_attach/1]).
 
 -import(rabbit_amqp1_0_util, [protocol_error/3,
                               serial_add/2, serial_diff/2, serial_compare/2]).
@@ -396,3 +396,25 @@ acknowledgement(DeliveryIds, Disposition) ->
                                     last = {uint, lists:last(DeliveryIds)},
                                     settled = true,
                                     state = #'v1_0.accepted'{} }.
+
+return(DTag, Session = #session{incoming_unsettled_map = Unsettled}) ->
+    {DeliveryId,
+     Unsettled1} = case gb_trees:lookup(DTag, Unsettled) of
+                       {value, #incoming_delivery{ delivery_id = Id }} ->
+                           {Id, gb_trees:delete(DTag, Unsettled)};
+                       none ->
+                           {undefined, Unsettled}
+                   end,
+    Disposition = case DeliveryId of
+                      undefined -> undefined;
+                      _  -> release(DeliveryId,
+                                    #'v1_0.disposition'{role = ?RECV_ROLE})
+    end,
+    {Disposition,
+     Session#session{incoming_unsettled_map = Unsettled1}}.
+
+release(DeliveryId, Disposition) ->
+    Disposition#'v1_0.disposition'{ first = {uint, DeliveryId},
+                                    last = {uint, DeliveryId},
+                                    settled = true,
+                                    state = #'v1_0.released'{} }.

@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_mgmt_external_stats).
@@ -51,19 +51,14 @@ start_link() ->
 
 get_used_fd(State0) ->
     try
-        case get_used_fd(os:type(), State0) of
-            {State1, UsedFd} when is_number(UsedFd) ->
-                {State1, UsedFd};
-            {State1, _Other} ->
-                %% Defaults to 0 if data is not available
-                {State1, 0}
-        end
+        get_used_fd(os:type(), State0)
     catch
         _:Error ->
             State2 = log_fd_error("Could not infer the number of file handles used: ~tp", [Error], State0),
             {State2, 0}
     end.
 
+-spec get_used_fd({atom(), atom()}, #state{}) -> {#state{}, non_neg_integer()}.
 get_used_fd({unix, linux}, State0) ->
     case file:list_dir("/proc/" ++ os:getpid() ++ "/fd") of
         {ok, Files} ->
@@ -109,29 +104,27 @@ get_used_fd({unix, _}, State0) ->
 %% you will see a list of handles of various types, including network sockets
 %% shown as file handles to \Device\Afd.
 get_used_fd({win32, _}, State0) ->
+    MissingHandleMsg = "Could not execute handle.exe, please install from "
+                       "https://learn.microsoft.com/en-us/sysinternals/downloads/handle",
     Pid = os:getpid(),
     case os:find_executable("handle.exe") of
         false ->
-            State1 = log_fd_warning_once("Could not find handle.exe, using powershell to determine handle count", [], State0),
-            UsedFd = get_used_fd_via_powershell(Pid),
-            {State1, UsedFd};
+            State1 = log_fd_warning_once(MissingHandleMsg, [], State0),
+            {State1, 0};
         HandleExe ->
             Args = ["/accepteula", "-s", "-p", Pid],
             {ok, HandleExeOutput} = rabbit_misc:win32_cmd(HandleExe, Args),
             case HandleExeOutput of
                 [] ->
-                    State1 = log_fd_warning_once("Could not execute handle.exe, using powershell to determine handle count", [], State0),
-                    UsedFd = get_used_fd_via_powershell(Pid),
-                    {State1, UsedFd};
+                    State1 = log_fd_warning_once(MissingHandleMsg, [], State0),
+                    {State1, 0};
                 _  ->
                     case find_files_line(HandleExeOutput) of
                         unknown ->
                             State1 = log_fd_warning_once("handle.exe output did not contain "
-                                                         "a line beginning with 'File', using "
-                                                         "powershell to determine used file descriptor "
-                                                         "count: ~tp", [HandleExeOutput], State0),
-                            UsedFd = get_used_fd_via_powershell(Pid),
-                            {State1, UsedFd};
+                                                         "a line beginning with 'File': ~tp",
+                                                         [HandleExeOutput], State0),
+                            {State1, 0};
                         UsedFd ->
                             {State0, UsedFd}
                     end
@@ -148,11 +141,6 @@ find_files_line(["File " ++ Rest | _T]) ->
     list_to_integer(Files);
 find_files_line([_H | T]) ->
     find_files_line(T).
-
-get_used_fd_via_powershell(Pid) ->
-    Cmd = "Get-Process -Id " ++ Pid ++ " | Select-Object -ExpandProperty HandleCount",
-    {ok, [Result]} = rabbit_misc:pwsh_cmd(Cmd),
-    list_to_integer(Result).
 
 -define(SAFE_CALL(Fun, NoProcFailResult),
     try

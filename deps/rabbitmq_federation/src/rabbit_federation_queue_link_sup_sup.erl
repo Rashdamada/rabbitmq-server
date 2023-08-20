@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_federation_queue_link_sup_sup).
@@ -26,9 +26,8 @@ start_link() ->
     %% This scope is used by concurrently starting exchange and queue links,
     %% and other places, so we have to start it very early outside of the supervision tree.
     %% The scope is stopped in stop/1.
-    rabbit_federation_pg:start_scope(),
+    _ = rabbit_federation_pg:start_scope(),
     mirrored_supervisor:start_link({local, ?SUPERVISOR}, ?SUPERVISOR,
-                                   fun rabbit_misc:execute_mnesia_transaction/1,
                                    ?MODULE, []).
 
 %% Note that the next supervisor down, rabbit_federation_link_sup, is common
@@ -51,13 +50,13 @@ start_child(Q) ->
 
 
 adjust({clear_upstream, VHost, UpstreamName}) ->
-    [rabbit_federation_link_sup:adjust(Pid, Q, {clear_upstream, UpstreamName}) ||
-        {Q, Pid, _, _} <- mirrored_supervisor:which_children(?SUPERVISOR),
-        ?amqqueue_vhost_equals(Q, VHost)],
+    _ = [rabbit_federation_link_sup:adjust(Pid, Q, {clear_upstream, UpstreamName}) ||
+            {Q, Pid, _, _} <- mirrored_supervisor:which_children(?SUPERVISOR),
+            ?amqqueue_vhost_equals(Q, VHost)],
     ok;
 adjust(Reason) ->
-    [rabbit_federation_link_sup:adjust(Pid, Q, Reason) ||
-        {Q, Pid, _, _} <- mirrored_supervisor:which_children(?SUPERVISOR)],
+    _ = [rabbit_federation_link_sup:adjust(Pid, Q, Reason) ||
+            {Q, Pid, _, _} <- mirrored_supervisor:which_children(?SUPERVISOR)],
     ok.
 
 stop_child(Q) ->

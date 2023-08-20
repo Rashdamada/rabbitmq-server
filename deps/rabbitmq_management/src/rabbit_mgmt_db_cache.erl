@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2016-2022 VMware, Inc. or its affiliates. All rights reserved.
+%% Copyright (c) 2016-2023 VMware, Inc. or its affiliates. All rights reserved.
 
 -module(rabbit_mgmt_db_cache).
 
@@ -104,7 +104,8 @@ handle_call({fetch, FetchFun, FunArgs}, _From,
     garbage_collect(),
     case Ref of
         R when is_reference(R) ->
-            _ = erlang:cancel_timer(R);
+            _ = erlang:cancel_timer(R),
+            ok;
         _ -> ok
     end,
 

@@ -2,7 +2,7 @@
 ## License, v. 2.0. If a copy of the MPL was not distributed with this
 ## file, You can obtain one at https://mozilla.org/MPL/2.0/.
 ##
-## Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+## Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 
 defmodule RabbitMQ.CLI.CommandBehaviour do
   alias RabbitMQ.CLI.Core.Helpers
@@ -47,7 +47,7 @@ defmodule RabbitMQ.CLI.CommandBehaviour do
   @callback printer() :: atom()
   @callback scopes() :: [atom()] | nil
   @callback description() :: String.t()
-  @callback help_section() :: String.t()
+  @callback help_section() :: String.t() | atom() | {:plugin, atom()}
   @callback usage_additional() ::
               String.t()
               | [String.t()]

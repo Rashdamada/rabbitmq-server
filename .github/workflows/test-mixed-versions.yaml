@@ -3,6 +3,7 @@ on:
   push:
     branches:
       - main
+      - v3.12.x
       - v3.11.x
       - v3.10.x
       - v3.9.x
@@ -31,9 +32,6 @@ jobs:
   ensure-mixed-version-archive:
     name: Prepare Artifacts
     runs-on: ubuntu-20.04
-    env:
-      # otp-min
-      otp_version_id: 25_0
     steps:
     - name: CHECKOUT REPOSITORY
       uses: actions/checkout@v3
@@ -59,9 +57,13 @@ jobs:
         fi
         echo "exists=${exists}" | tee $GITHUB_ENV
 
+        OTP_VERSION_ID=${ARCHIVE_URL#*secondary-umbrellas/rbe-}
+        OTP_VERSION_ID=${OTP_VERSION_ID%*/package-generic-unix-for-mixed-version-testing-v*.tar.xz}
+        echo "otp_version_id=${OTP_VERSION_ID}" | tee -a $GITHUB_OUTPUT
+
         VERSION=${ARCHIVE_URL#*package-generic-unix-for-mixed-version-testing-v}
         VERSION=${VERSION%*.tar.xz}
-        echo "version=${VERSION}" | tee $GITHUB_OUTPUT
+        echo "version=${VERSION}" | tee -a $GITHUB_OUTPUT
     - name: CHECKOUT REPOSITORY (MIXED VERSION)
       if: env.exists != 'true'
       uses: actions/checkout@v3
@@ -70,7 +72,7 @@ jobs:
         path: secondary-umbrella
     - name: MOUNT BAZEL CACHE
       if: env.exists != 'true'
-      uses: actions/cache@v3.0.11
+      uses: actions/cache@v3.3.1
       with:
         path: "/home/runner/repo-cache/"
         key: repo-cache-secondary-umbrella
@@ -96,15 +98,15 @@ jobs:
 
         sed -i"_orig" -E "/APP_VERSION/ s/3\.[0-9]+\.[0-9]+/${{ steps.check.outputs.version }}/" rabbitmq.bzl
         bazelisk build :package-generic-unix \
-          --config=rbe-${{ env.otp_version_id }} \
+          --config=rbe-${{ steps.check.outputs.otp_version_id }} \
           --test_build \
           --verbose_failures
 
         OUTPUT_DIR=${{ github.workspace }}/output
-        mkdir ${OUTPUT_DIR}
+        mkdir -p ${OUTPUT_DIR}/rbe-${{ steps.check.outputs.otp_version_id }}
         cp \
           bazel-bin/package-generic-unix.tar.xz \
-          ${OUTPUT_DIR}/package-generic-unix-for-mixed-version-testing-v${{ steps.check.outputs.version }}.tar.xz
+          ${OUTPUT_DIR}/rbe-${{ steps.check.outputs.otp_version_id }}/package-generic-unix-for-mixed-version-testing-v${{ steps.check.outputs.version }}.tar.xz
     - name: UPLOAD THE ARCHIVE TO S3
       if: env.exists != 'true'
       uses: jakejarvis/s3-sync-action@v0.5.1
@@ -126,16 +128,18 @@ jobs:
       fail-fast: false
       matrix:
         otp_version_id:
-        - "25_2"
+        - "25_3"
     timeout-minutes: 120
     steps:
     - name: CHECKOUT REPOSITORY
       uses: actions/checkout@v3
     - name: MOUNT BAZEL CACHE
-      uses: actions/cache@v3.0.11
+      uses: actions/cache@v3.3.1
       with:
         path: "/home/runner/repo-cache/"
-        key: repo-cache
+        key: ${{ runner.os }}-repo-cache-${{ hashFiles('MODULE.bazel','WORKSPACE','bazel/bzlmod/secondary_umbrella.bzl') }}
+        restore-keys: |
+          ${{ runner.os }}-repo-cache-
     - name: CONFIGURE BAZEL
       run: |
         if [ -n "${{ secrets.BUILDBUDDY_API_KEY }}" ]; then
@@ -168,22 +172,24 @@ jobs:
     strategy:
       matrix:
         include:
-        - erlang_version: "25.2"
-          elixir_version: 1.14.0
+        - erlang_version: "25.3"
+          elixir_version: 1.14.5
     timeout-minutes: 60
     steps:
     - name: CHECKOUT REPOSITORY
       uses: actions/checkout@v3
     - name: CONFIGURE OTP & ELIXIR
-      uses: erlef/setup-beam@v1.15
+      uses: erlef/setup-beam@v1.16
       with:
         otp-version: ${{ matrix.erlang_version }}
         elixir-version: ${{ matrix.elixir_version }}
     - name: MOUNT BAZEL CACHE
-      uses: actions/cache@v3.0.11
+      uses: actions/cache@v3.3.1
       with:
         path: "/home/runner/repo-cache/"
-        key: repo-cache
+        key: ${{ runner.os }}-repo-cache-${{ hashFiles('MODULE.bazel','WORKSPACE','bazel/bzlmod/secondary_umbrella.bzl') }}
+        restore-keys: |
+          ${{ runner.os }}-repo-cache-
     - name: CONFIGURE BAZEL
       run: |
         ERLANG_HOME="$(dirname $(dirname $(which erl)))"
@@ -215,3 +221,12 @@ jobs:
           --build_tests_only \
           --test_env RABBITMQ_CT_HELPERS_DELETE_UNUSED_NODES=true \
           --verbose_failures
+  summary-mixed-versions:
+    needs:
+    - test-mixed-versions
+    - test-exclusive-mixed-versions
+    runs-on: ubuntu-latest
+    steps:
+    - name: SUMMARY
+      run: |
+        echo "SUCCESS"

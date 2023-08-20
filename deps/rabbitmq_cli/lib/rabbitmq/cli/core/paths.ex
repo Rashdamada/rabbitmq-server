@@ -2,7 +2,7 @@
 ## License, v. 2.0. If a copy of the MPL was not distributed with this
 ## file, You can obtain one at https://mozilla.org/MPL/2.0/.
 ##
-## Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+## Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 
 defmodule RabbitMQ.CLI.Core.Paths do
   alias RabbitMQ.CLI.Core.Config
@@ -37,7 +37,7 @@ defmodule RabbitMQ.CLI.Core.Paths do
                 {:error, :data_dir_not_found}
 
               val ->
-                Application.put_env(:rabbit_, :data_dir, to_charlist(val))
+                Application.put_env(:rabbit, :data_dir, to_charlist(val))
                 Application.put_env(:mnesia, :dir, to_charlist(val))
             end
 

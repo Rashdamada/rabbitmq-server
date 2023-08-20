@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_stream_coordinator).
@@ -153,7 +153,7 @@ restart_stream(QRes) ->
     {timeout, term()}.
 restart_stream(QRes, Options)
   when element(1, QRes) == resource ->
-    restart_stream(hd(rabbit_amqqueue:lookup([QRes])), Options);
+    restart_stream(hd(rabbit_amqqueue:lookup_many([QRes])), Options);
 restart_stream(Q, Options)
   when ?is_amqqueue(Q) andalso
        ?amqqueue_is_stream(Q) ->
@@ -177,8 +177,7 @@ delete_stream(Q, ActingUser)
     #{name := StreamId} = amqqueue:get_type_state(Q),
     case process_command({delete_stream, StreamId, #{}}) of
         {ok, ok, _} ->
-            QName = amqqueue:get_name(Q),
-              _ = rabbit_amqqueue:internal_delete(QName, ActingUser),
+            _ = rabbit_amqqueue:internal_delete(Q, ActingUser),
             {ok, {ok, 0}};
         Err ->
             Err
@@ -272,7 +271,7 @@ query_pid(StreamId, MFA) when is_list(StreamId) ->
 -spec stream_overview(stream_id()) ->
     {ok, #{epoch := osiris:epoch(),
            members := #{node() := #{state := term(),
-                                    role := writer | replica,
+                                    role := {writer | replica, osiris:epoch()},
                                     current := term(),
                                     target := running | stopped}},
            num_listeners := non_neg_integer(),
@@ -426,8 +425,9 @@ ensure_coordinator_started() ->
     end.
 
 start_coordinator_cluster() ->
-    Nodes = rabbit_mnesia:cluster_nodes(running),
+    Nodes = rabbit_nodes:list_reachable(),
     rabbit_log:debug("Starting stream coordinator on nodes: ~w", [Nodes]),
+    true = Nodes =/= [],
     case ra:start_cluster(?RA_SYSTEM, [make_ra_conf(Node, Nodes) || Node <-  Nodes]) of
         {ok, Started, _} ->
             rabbit_log:debug("Started stream coordinator on ~w", [Started]),
@@ -439,7 +439,7 @@ start_coordinator_cluster() ->
     end.
 
 all_coord_members() ->
-    Nodes = rabbit_mnesia:cluster_nodes(running) -- [node()],
+    Nodes = rabbit_nodes:list_running() -- [node()],
     [{?MODULE, Node} || Node <- [node() | Nodes]].
 
 version() -> 4.
@@ -684,8 +684,8 @@ maybe_resize_coordinator_cluster() ->
                   case ra:members({?MODULE, node()}) of
                       {_, Members, _} ->
                           MemberNodes = [Node || {_, Node} <- Members],
-                          Running = rabbit_mnesia:cluster_nodes(running),
-                          All = rabbit_nodes:all(),
+                          Running = rabbit_nodes:list_running(),
+                          All = rabbit_nodes:list_members(),
                           case Running -- MemberNodes of
                               [] ->
                                   ok;
@@ -810,7 +810,7 @@ handle_aux(leader, _, fail_active_actions,
     %% tasks to avoid failing them, this could only really happen during
     %% a leader flipflap
     Exclude = maps:from_list([{S, ok}
-                              || {P, {S, _, _}} <- maps:to_list(Actions),
+                              || {P, {S, _, _}} <- maps_to_list(Actions),
                              is_process_alive(P)]),
     rabbit_log:debug("~ts: failing actions: ~w", [?MODULE, Exclude]),
     fail_active_actions(Streams, Exclude),
@@ -923,7 +923,7 @@ send_action_failed(StreamId, Action, Arg) ->
   send_self_command({action_failed, StreamId, Arg#{action => Action}}).
 
 send_self_command(Cmd) ->
-    ra:pipeline_command({?MODULE, node()}, Cmd),
+    ra:pipeline_command({?MODULE, node()}, Cmd, no_correlation, normal),
     ok.
 
 
@@ -1080,10 +1080,7 @@ phase_update_mnesia(StreamId, Args, #{reference := QName,
                                   Q
                           end
                   end,
-            try rabbit_misc:execute_mnesia_transaction(
-                  fun() ->
-                          rabbit_amqqueue:update(QName, Fun)
-                  end) of
+            try rabbit_amqqueue:update(QName, Fun) of
                 not_found ->
                     rabbit_log:debug("~ts: resource for stream id ~ts not found, "
                                      "recovering from rabbit_durable_queue",
@@ -1091,11 +1088,11 @@ phase_update_mnesia(StreamId, Args, #{reference := QName,
                     %% This can happen during recovery
                     %% we need to re-initialise the queue record
                     %% if the stream id is a match
-                    case mnesia:dirty_read(rabbit_durable_queue, QName) of
-                        [] ->
+                    case rabbit_amqqueue:lookup_durable_queue(QName) of
+                        {error, not_found} ->
                             %% queue not found at all, it must have been deleted
                             ok;
-                        [Q] ->
+                        {ok, Q} ->
                             case amqqueue:get_type_state(Q) of
                                 #{name := S} when S == StreamId ->
                                     rabbit_log:debug("~ts: initializing queue record for stream id  ~ts",
@@ -1820,7 +1817,7 @@ eval_replica(_Meta, Node, #member{} = Replica, _LeaderState, _Stream,
     {Replicas#{Node => Replica}, Actions}.
 
 fail_active_actions(Streams, Exclude) ->
-    maps:map(
+    _ = maps:map(
       fun (_,  #stream{id = Id,
                        members = Members,
                        mnesia = Mnesia})
@@ -1900,7 +1897,7 @@ find_leader(Members) ->
                    false;
                ({_, #member{role = {Role, _}}}) ->
                    Role == writer
-           end, maps:to_list(Members)) of
+           end, maps_to_list(Members)) of
         {[Writer], Replicas} ->
             {Writer, maps:from_list(Replicas)};
         {[], Replicas} ->
@@ -1955,7 +1952,7 @@ select_leader(#{system_time := Ts,
                            false;
                       (_, {_, #member{state = {stopped, _, empty}}}) ->
                            true
-                   end, maps:to_list(Stopped)),
+                   end, maps_to_list(Stopped)),
     Potential = lists:takewhile(fun ({_N, #member{state = S}}) ->
                                         S == MState
                                 end, Sorted),
@@ -1977,7 +1974,7 @@ select_leader(#{system_time := Ts,
 select_leader(Meta, Stopped) ->
     %% recurse with old format
     select_leader(Meta,
-                  maps:to_list(
+                  maps_to_list(
                     maps:map(
                       fun (_N, #member{state = {stopped, _, Tail}}) ->
                               Tail
@@ -2092,3 +2089,6 @@ transfer_leadership([Destination | _] = _TransferCandidates) ->
         undefined ->
             {ok, undefined}
     end.
+
+maps_to_list(M) ->
+    lists:sort(maps:to_list(M)).

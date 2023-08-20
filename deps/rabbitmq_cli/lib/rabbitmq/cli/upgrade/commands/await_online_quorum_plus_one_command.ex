@@ -2,7 +2,7 @@
 ## License, v. 2.0. If a copy of the MPL was not distributed with this
 ## file, You can obtain one at https://mozilla.org/MPL/2.0/.
 ##
-## Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+## Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 
 defmodule RabbitMQ.CLI.Upgrade.Commands.AwaitOnlineQuorumPlusOneCommand do
   alias RabbitMQ.CLI.Core.DocGuide
@@ -57,7 +57,7 @@ defmodule RabbitMQ.CLI.Upgrade.Commands.AwaitOnlineQuorumPlusOneCommand do
 
           false ->
             {:error,
-             "time is up, no quorum + 1 online replicas came online for at least some quorum queues"}
+             "time is up, no quorum + 1 online replicas came online for at least some quorum queues or streams"}
         end
 
       other ->
@@ -103,11 +103,11 @@ defmodule RabbitMQ.CLI.Upgrade.Commands.AwaitOnlineQuorumPlusOneCommand do
   def help_section, do: :upgrade
 
   def description() do
-    "Waits for all quorum queues to have an above minimum online quorum. " <>
-      "This makes sure that no queues would lose their quorum if the target node is shut down"
+    "Waits for all quorum queues and streams to have an above minimum online quorum. " <>
+      "This makes sure that no queues/streams would lose their quorum if the target node is shut down"
   end
 
   def banner([], %{timeout: timeout}) do
-    "Will wait for a quorum + 1 of nodes to be online for all quorum queues for #{round(timeout / 1000)} seconds..."
+    "Will wait for a quorum + 1 of nodes to be online for all quorum queues and streams for #{round(timeout / 1000)} seconds..."
   end
 end

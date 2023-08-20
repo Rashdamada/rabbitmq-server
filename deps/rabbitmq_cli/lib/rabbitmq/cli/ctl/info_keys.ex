@@ -2,14 +2,14 @@
 ## License, v. 2.0. If a copy of the MPL was not distributed with this
 ## file, You can obtain one at https://mozilla.org/MPL/2.0/.
 ##
-## Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+## Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 
 defmodule RabbitMQ.CLI.Ctl.InfoKeys do
   import RabbitCommon.Records
   alias RabbitMQ.CLI.Core.DataCoercion
 
   # internal to requested keys
-  @type info_keys :: Erlang.proplist()
+  @type info_keys :: [atom | tuple]
   # requested to internal keys
   @type aliases :: keyword(atom)
 
@@ -17,7 +17,7 @@ defmodule RabbitMQ.CLI.Ctl.InfoKeys do
     validate_info_keys(args, valid_keys, [])
   end
 
-  @spec validate_info_keys([charlist], [charlist], aliases) ::
+  @spec validate_info_keys([charlist], [charlist | atom], aliases) ::
           {:ok, info_keys} | {:validation_failure, any}
   def validate_info_keys(args, valid_keys, aliases) do
     info_keys = prepare_info_keys(args, aliases)
@@ -66,7 +66,7 @@ defmodule RabbitMQ.CLI.Ctl.InfoKeys do
     with_valid_info_keys(args, valid_keys, [], fun)
   end
 
-  @spec with_valid_info_keys([charlist], [charlist], aliases, fun([atom])) :: any
+  @spec with_valid_info_keys([charlist], [charlist], aliases, ([atom] -> any)) :: any
   def with_valid_info_keys(args, valid_keys, aliases, fun) do
     case validate_info_keys(args, valid_keys, aliases) do
       {:ok, info_keys} -> fun.(:proplists.get_keys(info_keys))

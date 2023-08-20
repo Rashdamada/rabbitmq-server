@@ -1,30 +1,38 @@
+workspace(name = "rabbitmq-server")
+
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive", "http_file")
-
-http_archive(
-    name = "bazel_skylib",
-    sha256 = "af87959afe497dc8dfd4c6cb66e1279cb98ccc84284619ebfec27d9c09a903de",
-    urls = [
-        "https://mirror.bazel.build/github.com/bazelbuild/bazel-skylib/releases/download/1.2.0/bazel-skylib-1.2.0.tar.gz",
-        "https://github.com/bazelbuild/bazel-skylib/releases/download/1.2.0/bazel-skylib-1.2.0.tar.gz",
-    ],
-)
-
-load("@bazel_skylib//:workspace.bzl", "bazel_skylib_workspace")
-
-bazel_skylib_workspace()
+load("@bazel_tools//tools/build_defs/repo:git.bzl", "git_repository", "new_git_repository")
 
 http_archive(
     name = "rules_pkg",
-    sha256 = "a89e203d3cf264e564fcb96b6e06dd70bc0557356eb48400ce4b5d97c2c3720d",
+    sha256 = "8f9ee2dc10c1ae514ee599a8b42ed99fa262b757058f65ad3c384289ff70c4b8",
     urls = [
-        "https://mirror.bazel.build/github.com/bazelbuild/rules_pkg/releases/download/0.5.1/rules_pkg-0.5.1.tar.gz",
-        "https://github.com/bazelbuild/rules_pkg/releases/download/0.5.1/rules_pkg-0.5.1.tar.gz",
+        "https://mirror.bazel.build/github.com/bazelbuild/rules_pkg/releases/download/0.9.1/rules_pkg-0.9.1.tar.gz",
+        "https://github.com/bazelbuild/rules_pkg/releases/download/0.9.1/rules_pkg-0.9.1.tar.gz",
     ],
 )
 
 load("@rules_pkg//:deps.bzl", "rules_pkg_dependencies")
 
 rules_pkg_dependencies()
+
+git_repository(
+    name = "rules_erlang",
+    remote = "https://github.com/rabbitmq/rules_erlang.git",
+    tag = "3.11.4",
+)
+
+load("@rules_erlang//:internal_deps.bzl", "rules_erlang_internal_deps")
+
+rules_erlang_internal_deps()
+
+load("@rules_erlang//:internal_setup.bzl", "rules_erlang_internal_setup")
+
+rules_erlang_internal_setup(go_repository_default_config = "//:WORKSPACE")
+
+load("@rules_erlang//gazelle:deps.bzl", "gazelle_deps")
+
+gazelle_deps()
 
 http_archive(
     name = "io_bazel_rules_docker",
@@ -56,10 +64,10 @@ container_pull(
 )
 
 http_file(
-    name = "openssl-1.1.1g",
-    downloaded_file_path = "openssl-1.1.1g.tar.gz",
-    sha256 = "ddb04774f1e32f0c49751e21b67216ac87852ceb056b75209af2443400636d46",
-    urls = ["https://www.openssl.org/source/openssl-1.1.1g.tar.gz"],
+    name = "openssl-3.1.1",
+    downloaded_file_path = "openssl-3.1.1.tar.gz",
+    sha256 = "b3aa61334233b852b63ddb048df181177c2c659eb9d4376008118f9c08d07674",
+    urls = ["https://github.com/openssl/openssl/releases/download/openssl-3.1.1/openssl-3.1.1.tar.gz"],
 )
 
 http_file(
@@ -78,48 +86,30 @@ http_file(
 
 http_file(
     name = "otp_src_25_1",
-    downloaded_file_path = "OTP-25.1.2.tar.gz",
-    sha256 = "b9ae7becd3499aeac9f94f9379e2b1b4dced4855454fe7f200a6e3e1cf4fbc53",
-    urls = ["https://github.com/erlang/otp/archive/OTP-25.1.2.tar.gz"],
+    downloaded_file_path = "OTP-25.1.2.1.tar.gz",
+    sha256 = "79f8e31bb9ff7d43a920f207ef104d1106b2332fdbadf11241d714eacb6d8d1a",
+    urls = ["https://github.com/erlang/otp/archive/OTP-25.1.2.1.tar.gz"],
 )
 
 http_file(
     name = "otp_src_25_2",
-    downloaded_file_path = "OTP-25.2.tar.gz",
-    sha256 = "d33a988f39e534aff67799c5b9635612858459c9d8890772546d71ea38de897a",
-    urls = ["https://github.com/erlang/otp/archive/OTP-25.2.tar.gz"],
+    downloaded_file_path = "OTP-25.2.3.tar.gz",
+    sha256 = "637bc5cf68dd229fd3c3fe889a6f84dd32c4a827488550a0a98123b00c2d78b5",
+    urls = ["https://github.com/erlang/otp/archive/OTP-25.2.3.tar.gz"],
 )
 
-http_archive(
-    name = "io_buildbuddy_buildbuddy_toolchain",
-    sha256 = "a2a5cccec251211e2221b1587af2ce43c36d32a42f5d881737db3b546a536510",
-    strip_prefix = "buildbuddy-toolchain-829c8a574f706de5c96c54ca310f139f4acda7dd",
-    urls = ["https://github.com/buildbuddy-io/buildbuddy-toolchain/archive/829c8a574f706de5c96c54ca310f139f4acda7dd.tar.gz"],
+http_file(
+    name = "otp_src_25_3",
+    downloaded_file_path = "OTP-25.3.2.5.tar.gz",
+    sha256 = "16f3b64498f024f7f7ad9bd65786effdc9a2f857a1ed33392e67728302772a03",
+    urls = ["https://github.com/erlang/otp/archive/OTP-25.3.2.5.tar.gz"],
 )
 
-load("@io_buildbuddy_buildbuddy_toolchain//:deps.bzl", "buildbuddy_deps")
-
-buildbuddy_deps()
-
-load("@io_buildbuddy_buildbuddy_toolchain//:rules.bzl", "buildbuddy")
-
-buildbuddy(
-    name = "buildbuddy_toolchain",
-    llvm = True,
-)
-
-load("@bazel_tools//tools/build_defs/repo:git.bzl", "git_repository")
-
-git_repository(
-    name = "rbe",
-    branch = "linux-rbe",
-    remote = "https://github.com/rabbitmq/rbe-erlang-platform.git",
-)
-
-git_repository(
-    name = "rules_erlang",
-    remote = "https://github.com/rabbitmq/rules_erlang.git",
-    tag = "3.8.4",
+http_file(
+    name = "otp_src_26",
+    downloaded_file_path = "OTP-26.0.2.tar.gz",
+    sha256 = "4def5ed5e49815fb02fceae8a66e94abc1049f5de30f97d9ad12fdf3293a2470",
+    urls = ["https://github.com/erlang/otp/archive/OTP-26.0.2.tar.gz"],
 )
 
 load(
@@ -127,7 +117,6 @@ load(
     "erlang_config",
     "internal_erlang_from_github_release",
     "internal_erlang_from_http_archive",
-    "rules_erlang_dependencies",
 )
 
 erlang_config(
@@ -144,24 +133,32 @@ erlang_config(
         ),
         internal_erlang_from_github_release(
             name = "25_1",
-            sha256 = "5442dea694e7555d479d80bc81f1428020639c258f8e40b2052732d1cc95cca5",
-            version = "25.1.2",
+            sha256 = "1cd2fbe225a412009cda9b1fd9f3fff0293e75e3020daa48abf68721471e91eb",
+            version = "25.1.2.1",
         ),
         internal_erlang_from_github_release(
             name = "25_2",
-            sha256 = "aee1ef294ee048c976d6a126a430367076354f484f557eacaf08bf086cb1314d",
-            version = "25.2",
+            sha256 = "f4d9f11d67ba478a053d72e635a44722a975603fe1284063fdf38276366bc61c",
+            version = "25.2.3",
+        ),
+        internal_erlang_from_github_release(
+            name = "25_3",
+            sha256 = "1f899b4b1ef8569c08713b76bc54607a09503a1d188e6d61512036188cc356db",
+            version = "25.3.2.5",
+        ),
+        internal_erlang_from_github_release(
+            name = "26",
+            sha256 = "4def5ed5e49815fb02fceae8a66e94abc1049f5de30f97d9ad12fdf3293a2470",
+            version = "26.0.2",
         ),
         internal_erlang_from_http_archive(
             name = "git_master",
             strip_prefix = "otp-master",
             url = "https://github.com/erlang/otp/archive/refs/heads/master.tar.gz",
-            version = "26",
+            version = "27",
         ),
     ],
 )
-
-rules_erlang_dependencies()
 
 load("@erlang_config//:defaults.bzl", "register_defaults")
 
@@ -182,8 +179,13 @@ elixir_config(
         ),
         internal_elixir_from_github_release(
             name = "1_14",
-            sha256 = "8ad537eb84471c24c3e6984c37884f06a7834ff2efd72c436c222baee8df9a11",
-            version = "1.14.1",
+            sha256 = "2ea249566c67e57f8365ecdcd0efd9b6c375f57609b3ac2de326488ac37c8ebd",
+            version = "1.14.5",
+        ),
+        internal_elixir_from_github_release(
+            name = "1_15",
+            sha256 = "3cfadca57c3092ccbd3ec3f17e5eab529bbd2946f50e4941a903c55c39e3c5f5",
+            version = "1.15.2",
         ),
     ],
     rabbitmq_server_workspace = "@",
@@ -196,9 +198,12 @@ load(
 
 register_elixir_defaults()
 
-load("//:workspace_helpers.bzl", "rabbitmq_external_deps")
-
-rabbitmq_external_deps(rabbitmq_workspace = "@")
+new_git_repository(
+    name = "bats",
+    build_file = "@//:BUILD.bats",
+    remote = "https://github.com/sstephenson/bats",
+    tag = "v0.4.0",
+)
 
 load("//deps/amqp10_client:activemq.bzl", "activemq_archive")
 
@@ -207,3 +212,9 @@ activemq_archive()
 load("//bazel/bzlmod:secondary_umbrella.bzl", "secondary_umbrella")
 
 secondary_umbrella()
+
+git_repository(
+    name = "rbe",
+    branch = "linux-rbe",
+    remote = "https://github.com/rabbitmq/rbe-erlang-platform.git",
+)

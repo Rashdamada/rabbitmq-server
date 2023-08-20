@@ -4,7 +4,7 @@
 %%
 %% The Initial Developer of the Original Code is AWeber Communications.
 %% Copyright (c) 2015-2016 AWeber Communications
-%% Copyright (c) 2016-2022 VMware, Inc. or its affiliates. All rights reserved.
+%% Copyright (c) 2016-2023 VMware, Inc. or its affiliates. All rights reserved.
 %%
 -module(rabbit_peer_discovery_cleanup).
 
@@ -277,7 +277,11 @@ maybe_remove_nodes([Node | Nodes], false) ->
     ?LOG_WARNING(
        "Peer discovery: removing unknown node ~ts from the cluster", [Node],
        #{domain => ?RMQLOG_DOMAIN_PEER_DIS}),
-    rabbit_mnesia:forget_cluster_node(Node, false),
+    _ = rabbit_db_cluster:forget_member(Node, false),
+    ?LOG_WARNING(
+        "Peer discovery: removing all quorum queue replicas on node ~ts", [Node],
+        #{domain => ?RMQLOG_DOMAIN_PEER_DIS}),
+    _ = rabbit_quorum_queue:shrink_all(Node),
     maybe_remove_nodes(Nodes, false).
 
 %%--------------------------------------------------------------------
@@ -288,13 +292,7 @@ maybe_remove_nodes([Node | Nodes], false) ->
 %%--------------------------------------------------------------------
 -spec unreachable_nodes() -> [node()].
 unreachable_nodes() ->
-    Status = rabbit_mnesia:status(),
-    Nodes = proplists:get_value(nodes, Status, []),
-    Running = proplists:get_value(running_nodes, Status, []),
-    All = lists:merge(proplists:get_value(disc, Nodes, []),
-                      proplists:get_value(ram, Nodes, [])),
-    lists:subtract(All, Running).
-
+    rabbit_nodes:list_unreachable().
 
 %%--------------------------------------------------------------------
 %% @private

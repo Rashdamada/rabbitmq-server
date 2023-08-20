@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2010-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2010-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_mirror_queue_sync).
@@ -256,7 +256,7 @@ await_slaves(Ref, SPids) ->
 %% down.
 
 syncer_check_resources(Ref, MPid, SPids) ->
-    rabbit_alarm:register(self(), {?MODULE, conserve_resources, []}),
+    _ = rabbit_alarm:register(self(), {?MODULE, conserve_resources, []}),
     %% Before we ask the master node to send the first batch of messages
     %% over here, we check if one node is already short on memory. If
     %% that's the case, we wait for the alarm to be cleared before
@@ -295,7 +295,7 @@ syncer_loop(Ref, MPid, SPids) ->
                     % Die silently because there are no mirrors left.
                     ok;
                 _  ->
-                    broadcast(SPids1, {sync_msgs, Ref, Msgs}),
+                    _ = broadcast(SPids1, {sync_msgs, Ref, Msgs}),
                     MPid ! {next, Ref},
                     syncer_loop(Ref, MPid, SPids1)
             end;
@@ -314,6 +314,9 @@ broadcast(SPids, Msg) ->
          SPid ! Msg
      end || SPid <- SPids].
 
+-spec conserve_resources(pid(),
+                         rabbit_alarm:resource_alarm_source(),
+                         rabbit_alarm:resource_alert()) -> ok.
 conserve_resources(Pid, Source, {_, Conserve, _}) ->
     Pid ! {conserve_resources, Source, Conserve},
     ok.

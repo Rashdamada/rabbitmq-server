@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_looking_glass).
@@ -61,7 +61,7 @@ trace(Input) ->
             )).
 
 trace_qq() ->
-    dbg:stop_clear(),
+    dbg:stop(),
     lg:trace([ra_server,
               ra_server_proc,
               rabbit_fifo,
@@ -78,7 +78,7 @@ trace_qq() ->
                             ]
             )),
     timer:sleep(10000),
-    lg:stop(),
+    _ = lg:stop(),
     profile().
 
 profile() ->

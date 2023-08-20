@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_shovel_worker_sup).
@@ -15,7 +15,6 @@
 
 start_link(ShovelName, ShovelConfig) ->
     mirrored_supervisor:start_link({local, ShovelName}, ShovelName,
-                                   fun rabbit_misc:execute_mnesia_transaction/1,
                                    ?MODULE, [ShovelName, ShovelConfig]).
 
 init([Name, Config]) ->

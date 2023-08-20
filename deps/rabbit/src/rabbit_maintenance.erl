@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2018-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2018-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_maintenance).
@@ -28,17 +28,13 @@
     random_primary_replica_transfer_candidate_node/2,
     transfer_leadership_of_quorum_queues/1,
     transfer_leadership_of_classic_mirrored_queues/1,
-    status_table_name/0,
-    status_table_definition/0,
     boot/0
 ]).
 
--define(TABLE, rabbit_node_maintenance_states).
 -define(DEFAULT_STATUS,  regular).
 -define(DRAINING_STATUS, draining).
 
 -type maintenance_status() :: ?DEFAULT_STATUS | ?DRAINING_STATUS.
--type mnesia_table() :: atom().
 
 -export_type([
     maintenance_status/0
@@ -54,34 +50,11 @@
         {requires,    networking}]}).
 
 boot() ->
-    TableName = status_table_name(),
-    rabbit_log:info(
-      "Creating table ~ts for maintenance mode status",
-      [TableName]),
-    try
-        _ = rabbit_table:create(
-              TableName,
-              status_table_definition())
-    catch throw:Reason  ->
-              rabbit_log:error(
-                "Failed to create maintenance status table: ~tp",
-                [Reason])
-    end.
+    rabbit_db_maintenance:setup_schema().
 
 %%
 %% API
 %%
-
--spec status_table_name() -> mnesia_table().
-status_table_name() ->
-    ?TABLE.
-
--spec status_table_definition() -> list().
-status_table_definition() ->
-    maps:to_list(#{
-        record_name => node_maintenance_state,
-        attributes  => record_info(fields, node_maintenance_state)
-    }).
 
 -spec is_enabled() -> boolean().
 is_enabled() ->
@@ -92,7 +65,7 @@ drain() ->
     rabbit_log:warning("This node is being put into maintenance (drain) mode"),
     mark_as_being_drained(),
     rabbit_log:info("Marked this node as undergoing maintenance"),
-    suspend_all_client_listeners(),
+    _ = suspend_all_client_listeners(),
     rabbit_log:warning("Suspended all listeners and will no longer accept client connections"),
     {ok, NConnections} = close_all_client_connections(),
     rabbit_log:warning("Closed ~b local client connections", [NConnections]),
@@ -125,7 +98,7 @@ revive() ->
     rabbit_log:info("This node is being revived from maintenance (drain) mode"),
     revive_local_quorum_queue_replicas(),
     rabbit_log:info("Resumed all listeners and will accept client connections again"),
-    resume_all_client_listeners(),
+    _ = resume_all_client_listeners(),
     rabbit_log:info("Resumed all listeners and will accept client connections again"),
     unmark_as_being_drained(),
     rabbit_log:info("Marked this node as back from maintenance and ready to serve clients"),
@@ -134,40 +107,17 @@ revive() ->
     rabbit_event:notify(maintenance_revived, #{}),
 
     ok.
- 
+
 -spec mark_as_being_drained() -> boolean().
 mark_as_being_drained() ->
     rabbit_log:debug("Marking the node as undergoing maintenance"),
-    set_maintenance_status_status(?DRAINING_STATUS).
- 
+    rabbit_db_maintenance:set(?DRAINING_STATUS).
+
 -spec unmark_as_being_drained() -> boolean().
 unmark_as_being_drained() ->
     rabbit_log:debug("Unmarking the node as undergoing maintenance"),
-    set_maintenance_status_status(?DEFAULT_STATUS).
+    rabbit_db_maintenance:set(?DEFAULT_STATUS).
 
-set_maintenance_status_status(Status) ->
-    Res = mnesia:transaction(fun () ->
-        case mnesia:wread({?TABLE, node()}) of
-           [] ->
-                Row = #node_maintenance_state{
-                        node   = node(),
-                        status = Status
-                     },
-                mnesia:write(?TABLE, Row, write);
-            [Row0] ->
-                Row = Row0#node_maintenance_state{
-                        node   = node(),
-                        status = Status
-                      },
-                mnesia:write(?TABLE, Row, write)
-        end
-    end),
-    case Res of
-        {atomic, ok} -> true;
-        _            -> false
-    end.
- 
- 
 -spec is_being_drained_local_read(node()) -> boolean().
 is_being_drained_local_read(Node) ->
     Status = status_local_read(Node),
@@ -180,31 +130,30 @@ is_being_drained_consistent_read(Node) ->
 
 -spec status_local_read(node()) -> maintenance_status().
 status_local_read(Node) ->
-    case catch mnesia:dirty_read(?TABLE, Node) of
-        []  -> ?DEFAULT_STATUS;
-        [#node_maintenance_state{node = Node, status = Status}] ->
-            Status;
-        _   -> ?DEFAULT_STATUS
+    case rabbit_db_maintenance:get(Node) of
+        undefined ->
+            ?DEFAULT_STATUS;
+        Status ->
+            Status
     end.
- 
+
 -spec status_consistent_read(node()) -> maintenance_status().
 status_consistent_read(Node) ->
-    case mnesia:transaction(fun() -> mnesia:read(?TABLE, Node) end) of
-        {atomic, []} -> ?DEFAULT_STATUS;
-        {atomic, [#node_maintenance_state{node = Node, status = Status}]} ->
-            Status;
-        {atomic, _}  -> ?DEFAULT_STATUS;
-        {aborted, _Reason} -> ?DEFAULT_STATUS
+    case rabbit_db_maintenance:get_consistent(Node) of
+        undefined ->
+            ?DEFAULT_STATUS;
+        Status ->
+            Status
     end.
- 
+
  -spec filter_out_drained_nodes_local_read([node()]) -> [node()].
 filter_out_drained_nodes_local_read(Nodes) ->
     lists:filter(fun(N) -> not is_being_drained_local_read(N) end, Nodes).
- 
+
 -spec filter_out_drained_nodes_consistent_read([node()]) -> [node()].
 filter_out_drained_nodes_consistent_read(Nodes) ->
     lists:filter(fun(N) -> not is_being_drained_consistent_read(N) end, Nodes).
- 
+
 -spec suspend_all_client_listeners() -> rabbit_types:ok_or_error(any()).
  %% Pauses all listeners on the current node except for
  %% Erlang distribution (clustering and CLI tools).
@@ -341,7 +290,7 @@ stop_local_quorum_queue_followers() ->
 
 -spec primary_replica_transfer_candidate_nodes() -> [node()].
 primary_replica_transfer_candidate_nodes() ->
-    filter_out_drained_nodes_consistent_read(rabbit_nodes:all_running() -- [node()]).
+    filter_out_drained_nodes_consistent_read(rabbit_nodes:list_running() -- [node()]).
 
 -spec random_primary_replica_transfer_candidate_node([node()], [node()]) -> {ok, node()} | undefined.
 random_primary_replica_transfer_candidate_node([], _Preferred) ->
@@ -383,7 +332,7 @@ revive_local_quorum_queue_replicas() ->
         end
      end || Q <- Queues],
     rabbit_log:info("Restart of local quorum queue replicas is complete").
- 
+
 %%
 %% Implementation
 %%
@@ -395,11 +344,11 @@ local_listener_fold_fun(Fun) ->
         (_, Acc) ->
             Acc
     end.
- 
+
 ok_or_first_error(ok, Acc) ->
     Acc;
 ok_or_first_error({error, _} = Err, _Acc) ->
     Err.
- 
+
 readable_candidate_list(Nodes) ->
     string:join(lists:map(fun rabbit_data_coercion:to_list/1, Nodes), ", ").

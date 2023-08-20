@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 %% @type close_reason(Type) = {shutdown, amqp_reason(Type)}.
@@ -489,11 +489,11 @@ handle_info({send_command, Method, Content}, State) ->
 handle_info({send_command_and_notify, QPid, ChPid,
              Method = #'basic.deliver'{}, Content},
             State = #state{delivery_flow_control = MFC}) ->
-    case MFC of
-        false -> handle_method_from_server(Method, Content, State),
-                 rabbit_amqqueue_common:notify_sent(QPid, ChPid);
-        true  -> handle_method_from_server(Method, Content,
-                                           {self(), QPid, ChPid}, State)
+    _ = case MFC of
+        false -> _ = handle_method_from_server(Method, Content, State),
+                 _ = rabbit_amqqueue_common:notify_sent(QPid, ChPid);
+        true  -> _ = handle_method_from_server(Method, Content,
+                                               {self(), QPid, ChPid}, State)
     end,
     {noreply, State};
 %% This comes from the writer or rabbit_channel
@@ -763,8 +763,8 @@ handle_method_from_server1(#'basic.deliver'{} = Deliver, AmqpMsg, State) ->
     {noreply, State};
 handle_method_from_server1(#'channel.flow'{active = Active} = Flow, none,
                            State = #state{flow_handler = FlowHandler}) ->
-    case FlowHandler of none        -> ok;
-                        {Pid, _Ref} -> Pid ! Flow
+    _ = case FlowHandler of none        -> ok;
+                            {Pid, _Ref} -> Pid ! Flow
     end,
     %% Putting the flow_ok in the queue so that the RPC queue can be
     %% flushed beforehand. Methods that made it to the queue are not
@@ -774,7 +774,7 @@ handle_method_from_server1(#'channel.flow'{active = Active} = Flow, none,
 handle_method_from_server1(
         #'basic.return'{} = BasicReturn, AmqpMsg,
         State = #state{return_handler = ReturnHandler}) ->
-    case ReturnHandler of
+    _ = case ReturnHandler of
         none        -> ?LOG_WARN("Channel (~tp): received {~tp, ~tp} but there is "
                                  "no return handler registered",
                                  [self(), BasicReturn, AmqpMsg]);
@@ -886,6 +886,9 @@ flush_writer(#state{driver = direct}) ->
     ok.
 amqp_msg(none) ->
     none;
+amqp_msg({DTag, Content}) ->
+    {Props, Payload} = rabbit_basic_common:from_content(Content),
+    {DTag, #amqp_msg{props = Props, payload = Payload}};
 amqp_msg(Content) ->
     {Props, Payload} = rabbit_basic_common:from_content(Content),
     #amqp_msg{props = Props, payload = Payload}.
@@ -1004,7 +1007,9 @@ call_to_consumer(Method, Args, DeliveryCtx, #state{consumer = Consumer}) ->
     amqp_gen_consumer:call_consumer(Consumer, Method, Args, DeliveryCtx).
 
 safe_cancel_timer(undefined) -> ok;
-safe_cancel_timer(TRef)      -> erlang:cancel_timer(TRef).
+safe_cancel_timer(TRef)      ->
+    _ = erlang:cancel_timer(TRef),
+    ok.
 
 second_to_millisecond(Timeout) ->
     Timeout * 1000.

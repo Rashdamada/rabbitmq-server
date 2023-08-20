@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 %% @todo This module also needs to be updated when variable queue changes.
@@ -80,7 +80,7 @@
 
           io_batch_size,
 
-          %% default queue or lazy queue
+          %% default queue (or lazy queue from 3.6 to 3.11)
           mode,
           version = 1,
           %% Fast path for confirms handling. Instead of having

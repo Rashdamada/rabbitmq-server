@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2018-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2018-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(vhost).
@@ -34,7 +34,7 @@
 
 -define(record_version, vhost_v2).
 
--type(name() :: binary()).
+-type(name() :: rabbit_types:vhost()).
 
 -type(limits() :: list()).
 
@@ -46,6 +46,8 @@
 
 -type(description() :: binary()).
 -type(tag() :: atom()).
+-type(tags() :: [tag()]).
+-type(unparsed_tags() :: binary() | string() | atom()).
 
 -type vhost() :: vhost_v2().
 
@@ -76,6 +78,8 @@
               metadata/0,
               description/0,
               tag/0,
+              unparsed_tags/0,
+              tags/0,
               vhost/0,
               vhost_v2/0,
               vhost_pattern/0,
@@ -139,7 +143,7 @@ get_description(#vhost{} = VHost) ->
 
 -spec get_tags(vhost()) -> [tag()].
 get_tags(#vhost{} = VHost) ->
-    maps:get(tags, get_metadata(VHost), undefined).
+    maps:get(tags, get_metadata(VHost), []).
 
 -spec get_default_queue_type(vhost()) -> binary() | undefined.
 get_default_queue_type(#vhost{} = VHost) ->

@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_writer).
@@ -58,43 +58,43 @@
     %% data pending delivery (between socket
     %% flushes)
     pending,
-    %% defines how ofter gc will be executed
+    %% defines how often gc will be executed
     writer_gc_threshold
 }).
 
 -define(HIBERNATE_AFTER, 5000).
 %% 1GB
--define(DEFAULT_GC_THRESHOLD, 1000000000).
+-define(DEFAULT_GC_THRESHOLD, 1_000_000_000).
 
 %%---------------------------------------------------------------------------
 
 -spec start
-        (rabbit_net:socket(), rabbit_channel:channel_number(),
+        (rabbit_net:socket(), rabbit_types:channel_number(),
          non_neg_integer(), rabbit_types:protocol(), pid(),
          rabbit_types:proc_name()) ->
             rabbit_types:ok(pid()).
 -spec start_link
-        (rabbit_net:socket(), rabbit_channel:channel_number(),
+        (rabbit_net:socket(), rabbit_types:channel_number(),
          non_neg_integer(), rabbit_types:protocol(), pid(),
          rabbit_types:proc_name()) ->
             rabbit_types:ok(pid()).
 -spec start
-        (rabbit_net:socket(), rabbit_channel:channel_number(),
+        (rabbit_net:socket(), rabbit_types:channel_number(),
          non_neg_integer(), rabbit_types:protocol(), pid(),
          rabbit_types:proc_name(), boolean()) ->
             rabbit_types:ok(pid()).
 -spec start_link
-        (rabbit_net:socket(), rabbit_channel:channel_number(),
+        (rabbit_net:socket(), rabbit_types:channel_number(),
          non_neg_integer(), rabbit_types:protocol(), pid(),
          rabbit_types:proc_name(), boolean()) ->
             rabbit_types:ok(pid()).
 -spec start
-        (rabbit_net:socket(), rabbit_channel:channel_number(),
+        (rabbit_net:socket(), rabbit_types:channel_number(),
          non_neg_integer(), rabbit_types:protocol(), pid(),
          rabbit_types:proc_name(), boolean(), undefined|non_neg_integer()) ->
             rabbit_types:ok(pid()).
 -spec start_link
-        (rabbit_net:socket(), rabbit_channel:channel_number(),
+        (rabbit_net:socket(), rabbit_types:channel_number(),
          non_neg_integer(), rabbit_types:protocol(), pid(),
          rabbit_types:proc_name(), boolean(), undefined|non_neg_integer()) ->
             rabbit_types:ok(pid()).
@@ -105,7 +105,10 @@
 
 -spec send_command(pid(), rabbit_framing:amqp_method_record()) -> 'ok'.
 -spec send_command
-        (pid(), rabbit_framing:amqp_method_record(), rabbit_types:content()) ->
+        (pid(), rabbit_framing:amqp_method_record(),
+         rabbit_types:content() |
+         {integer(), rabbit_types:content()} %% publishing sequence for AMQP 1.0 return callback
+        ) ->
             'ok'.
 -spec send_command_sync(pid(), rabbit_framing:amqp_method_record()) -> 'ok'.
 -spec send_command_sync
@@ -123,11 +126,11 @@
             'ok'.
 -spec flush(pid()) -> 'ok'.
 -spec internal_send_command
-        (rabbit_net:socket(), rabbit_channel:channel_number(),
+        (rabbit_net:socket(), rabbit_types:channel_number(),
          rabbit_framing:amqp_method_record(), rabbit_types:protocol()) ->
             'ok'.
 -spec internal_send_command
-        (rabbit_net:socket(), rabbit_channel:channel_number(),
+        (rabbit_net:socket(), rabbit_types:channel_number(),
          rabbit_framing:amqp_method_record(), rabbit_types:content(),
          non_neg_integer(), rabbit_types:protocol()) ->
             'ok'.

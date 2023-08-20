@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_mnesia_rename).
@@ -60,10 +60,10 @@ rename(Node, NodeMapList) ->
         %% And make the actual changes
         become(FromNode),
         take_backup(before_backup_name()),
-        convert_backup(NodeMap, before_backup_name(), after_backup_name()),
+        _ = convert_backup(NodeMap, before_backup_name(), after_backup_name()),
         ok = rabbit_file:write_term_file(rename_config_name(),
                                          [{FromNode, ToNode}]),
-        convert_config_files(NodeMap),
+        _ = convert_config_files(NodeMap),
         become(ToNode),
         restore_backup(after_backup_name()),
         ok
@@ -100,7 +100,7 @@ prepare(Node, NodeMapList) ->
 
     %% Check that we are in the cluster, all old nodes are in the
     %% cluster, and no new nodes are.
-    Nodes = rabbit_nodes:all(),
+    Nodes = rabbit_nodes:list_members(),
     case {FromNodes -- Nodes, ToNodes -- (ToNodes -- Nodes),
           lists:member(Node, Nodes ++ ToNodes)} of
         {[], [], true}  -> ok;
@@ -130,7 +130,7 @@ restore_backup(Backup) ->
 -spec maybe_finish() -> ok.
 
 maybe_finish() ->
-    AllNodes = rabbit_nodes:all(),
+    AllNodes = rabbit_nodes:list_members(),
     maybe_finish(AllNodes).
 
 -spec maybe_finish([node()]) -> 'ok'.
@@ -144,7 +144,7 @@ maybe_finish(AllNodes) ->
 finish(FromNode, ToNode, AllNodes) ->
     case node() of
         ToNode ->
-            case rabbit_nodes:filter_nodes_running_rabbitmq(AllNodes) of
+            case rabbit_nodes:filter_running(AllNodes) of
                 [] -> finish_primary(FromNode, ToNode);
                 _  -> finish_secondary(FromNode, ToNode, AllNodes)
             end;
@@ -152,7 +152,7 @@ finish(FromNode, ToNode, AllNodes) ->
             rabbit_log:info(
               "Abandoning rename from ~ts to ~ts since we are still ~ts",
               [FromNode, ToNode, FromNode]),
-            [{ok, _} = file:copy(backup_of_conf(F), F) || F <- config_files()],
+            _ = [{ok, _} = file:copy(backup_of_conf(F), F) || F <- config_files()],
             ok = rabbit_file:recursive_delete([rabbit_mnesia:dir()]),
             ok = rabbit_file:recursive_copy(
                    mnesia_copy_dir(), rabbit_mnesia:dir()),
@@ -257,8 +257,8 @@ update_term(_NodeMap, Term) ->
     Term.
 
 rename_in_running_mnesia(FromNode, ToNode) ->
-    All = rabbit_nodes:all(),
-    Running = rabbit_nodes:all_running(),
+    All = rabbit_nodes:list_members(),
+    Running = rabbit_mnesia:cluster_nodes(running),
     case {lists:member(FromNode, Running), lists:member(ToNode, All)} of
         {false, true}  -> ok;
         {true,  _}     -> exit({old_node_running,        FromNode});
@@ -272,7 +272,7 @@ rename_in_running_mnesia(FromNode, ToNode) ->
 transform_table(Table, Map) ->
     mnesia:sync_transaction(
       fun () ->
-              mnesia:lock({table, Table}, write),
+              _ = mnesia:lock({table, Table}, write),
               transform_table(Table, Map, mnesia:first(Table))
       end).
 

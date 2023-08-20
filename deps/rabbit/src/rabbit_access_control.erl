@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_access_control).
@@ -13,12 +13,6 @@
          check_vhost_access/4, check_resource_access/4, check_topic_access/4]).
 
 -export([permission_cache_can_expire/1, update_state/2]).
-
-%%----------------------------------------------------------------------------
-
--export_type([permission_atom/0]).
-
--type permission_atom() :: 'configure' | 'read' | 'write'.
 
 %%----------------------------------------------------------------------------
 
@@ -59,7 +53,7 @@ check_user_login(Username, AuthProps) ->
                             rabbit_log:debug("User '~ts' authenticated successfully by backend ~ts", [Username2, Mod]),
                             user(ModNUser, {ok, [{Mod, Impl}], []});
                         Else ->
-                            rabbit_log:debug("User '~ts' failed authenticatation by backend ~ts", [Username, Mod]),
+                            rabbit_log:debug("User '~ts' failed authentication by backend ~ts", [Username, Mod]),
                             Else
                     end;
                 (_, {ok, User}) ->
@@ -67,8 +61,8 @@ check_user_login(Username, AuthProps) ->
                     {ok, User}
             end,
             {refused, Username, "No modules checked '~ts'", [Username]}, Modules)
-        catch 
-            Type:Error:Stacktrace -> 
+        catch
+            Type:Error:Stacktrace ->
                 rabbit_log:debug("User '~ts' authentication failed with ~ts:~tp:~n~tp", [Username, Type, Error, Stacktrace]),
                 {refused, Username, "User '~ts' authentication failed with internal error. "
                                     "Enable debug logs to see the real error.", [Username]}
@@ -179,7 +173,7 @@ create_vhost_access_authz_data(PeerAddr, Context) ->
     maps:merge(PeerAddr, Context).
 
 -spec check_resource_access
-        (rabbit_types:user(), rabbit_types:r(atom()), permission_atom(), rabbit_types:authz_context()) ->
+        (rabbit_types:user(), rabbit_types:r(atom()), rabbit_types:permission_atom(), rabbit_types:authz_context()) ->
             'ok' | rabbit_types:channel_exit().
 
 check_resource_access(User, R = #resource{kind = exchange, name = <<"">>},
@@ -194,8 +188,8 @@ check_resource_access(User = #user{username       = Username,
               check_access(
                 fun() -> Module:check_resource_access(
                            auth_user(User, Impl), Resource, Permission, Context) end,
-                Module, "access to ~ts refused for user '~ts'",
-                [rabbit_misc:rs(Resource), Username]);
+                Module, "~s access to ~s refused for user '~s'",
+                [Permission, rabbit_misc:rs(Resource), Username]);
          (_, Else) -> Else
       end, ok, Modules).
 
@@ -207,8 +201,8 @@ check_topic_access(User = #user{username = Username,
             check_access(
                 fun() -> Module:check_topic_access(
                     auth_user(User, Impl), Resource, Permission, Context) end,
-                Module, "access to topic '~ts' in exchange ~ts refused for user '~ts'",
-                [maps:get(routing_key, Context), rabbit_misc:rs(Resource), Username]);
+                Module, "~s access to topic '~s' in exchange ~s refused for user '~s'",
+                [Permission, maps:get(routing_key, Context), rabbit_misc:rs(Resource), Username]);
             (_, Else) -> Else
         end, ok, Modules).
 

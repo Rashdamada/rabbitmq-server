@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 %% @private
@@ -190,7 +190,7 @@ check_all_channels_terminated(State = #state{closing = true,
 
 handle_connection_closing(ChannelCloseType, Reason,
                           State = #state{connection = Connection}) ->
-    case internal_is_empty(State) of
+    _ = case internal_is_empty(State) of
         true  -> amqp_gen_connection:channels_terminated(Connection);
         false -> signal_channels_connection_closing(ChannelCloseType, Reason,
                                                     State)

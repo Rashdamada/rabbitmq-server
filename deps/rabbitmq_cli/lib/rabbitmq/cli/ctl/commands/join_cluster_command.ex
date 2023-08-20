@@ -2,7 +2,7 @@
 ## License, v. 2.0. If a copy of the MPL was not distributed with this
 ## file, You can obtain one at https://mozilla.org/MPL/2.0/.
 ##
-## Copyright (c) 2016-2022 VMware, Inc. or its affiliates.  All rights reserved.
+## Copyright (c) 2016-2023 VMware, Inc. or its affiliates.  All rights reserved.
 
 defmodule RabbitMQ.CLI.Ctl.Commands.JoinClusterCommand do
   alias RabbitMQ.CLI.Core.{Config, DocGuide, Helpers}
@@ -42,12 +42,26 @@ defmodule RabbitMQ.CLI.Ctl.Commands.JoinClusterCommand do
     long_or_short_names = Config.get_option(:longnames, opts)
     target_node_normalised = Helpers.normalise_node(target_node, long_or_short_names)
 
-    :rabbit_misc.rpc_call(
-      node_name,
-      :rabbit_mnesia,
-      :join_cluster,
-      [target_node_normalised, node_type]
-    )
+    ret =
+      :rabbit_misc.rpc_call(
+        node_name,
+        :rabbit_db_cluster,
+        :join,
+        [target_node_normalised, node_type]
+      )
+
+    case ret do
+      {:badrpc, {:EXIT, {:undef, _}}} ->
+        :rabbit_misc.rpc_call(
+          node_name,
+          :rabbit_mnesia,
+          :join_cluster,
+          [target_node_normalised, node_type]
+        )
+
+      _ ->
+        ret
+    end
   end
 
   def output({:ok, :already_member}, _) do

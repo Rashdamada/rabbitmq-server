@@ -11,7 +11,7 @@
 %% The Original Code is RabbitMQ.
 %%
 %% The Initial Developer of the Original Code is Pivotal Software, Inc.
-%% Copyright (c) 2020-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2020-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_stream_SUITE).
@@ -33,9 +33,10 @@ all() ->
 
 groups() ->
     [{single_node, [],
-      [sac_ff, %% must stay at the top, stream sac feature flag disabled for this one
+      [filtering_ff, %% must stay at the top, feature flag disabled for this one
        test_stream,
        test_stream_tls,
+       test_publish_v2,
        test_gc_consumers,
        test_gc_publishers,
        unauthenticated_client_rejected_tcp_connected,
@@ -45,11 +46,13 @@ groups() ->
        unauthenticated_client_rejected_authenticating,
        timeout_authenticating,
        timeout_close_sent,
-       max_segment_size_bytes_validation]},
+       max_segment_size_bytes_validation,
+       close_connection_on_consumer_update_timeout,
+       set_filter_size]},
      %% Run `test_global_counters` on its own so the global metrics are
      %% initialised to 0 for each testcase
      {single_node_1, [], [test_global_counters]},
-     {cluster, [], [test_stream, test_stream_tls, java]}].
+     {cluster, [], [test_stream, test_stream_tls, test_metadata, java]}].
 
 init_per_suite(Config) ->
     case rabbit_ct_helpers:is_mixed_versions() of
@@ -64,15 +67,13 @@ end_per_suite(Config) ->
     Config.
 
 init_per_group(Group, Config)
-    when Group == single_node orelse Group == single_node_1 ->
-    Config1 =
-        rabbit_ct_helpers:set_config(Config, [{rmq_nodes_clustered, false}]),
-    Config2 =
-        rabbit_ct_helpers:set_config(Config1,
-                                     {rabbitmq_ct_tls_verify, verify_none}),
-    Config3 =
-        rabbit_ct_helpers:set_config(Config2, {rabbitmq_stream, verify_none}),
-    %% stream sac feature flag disabled for the first test,
+  when Group == single_node orelse Group == single_node_1 ->
+    Config1 = rabbit_ct_helpers:set_config(
+                Config, [{rmq_nodes_clustered, false},
+                         {rabbitmq_ct_tls_verify, verify_none},
+                         {rabbitmq_stream, verify_none}
+                        ]),
+    %% filtering feature flag disabled for the first test,
     %% then enabled in the end_per_testcase function
     ExtraSetupSteps =
         case Group of
@@ -81,46 +82,46 @@ init_per_group(Group, Config)
                     rabbit_ct_helpers:merge_app_env(StepConfig,
                                                     {rabbit,
                                                      [{forced_feature_flags_on_init,
-                                                       [classic_mirrored_queue_version,
-                                                        stream_queue]}]})
+                                                       [stream_queue,
+                                                        stream_sac_coordinator_unblock_group,
+                                                        stream_single_active_consumer]}]})
                  end];
             _ ->
                 []
         end,
-    rabbit_ct_helpers:run_setup_steps(Config3,
-                                      [fun(StepConfig) ->
-                                          rabbit_ct_helpers:merge_app_env(StepConfig,
-                                                                          {rabbit,
-                                                                           [{core_metrics_gc_interval,
-                                                                             1000}]})
-                                       end,
-                                       fun(StepConfig) ->
-                                          rabbit_ct_helpers:merge_app_env(StepConfig,
-                                                                          {rabbitmq_stream,
-                                                                           [{connection_negotiation_step_timeout,
-                                                                             500}]})
-                                       end]
-                                      ++ ExtraSetupSteps
-                                      ++ rabbit_ct_broker_helpers:setup_steps());
+    rabbit_ct_helpers:run_setup_steps(
+      Config1,
+      [fun(StepConfig) ->
+               rabbit_ct_helpers:merge_app_env(StepConfig,
+                                               {rabbit,
+                                                [{core_metrics_gc_interval,
+                                                  1000}]})
+       end,
+       fun(StepConfig) ->
+               rabbit_ct_helpers:merge_app_env(StepConfig,
+                                               {rabbitmq_stream,
+                                                [{connection_negotiation_step_timeout,
+                                                  500}]})
+       end]
+      ++ ExtraSetupSteps
+      ++ rabbit_ct_broker_helpers:setup_steps());
 init_per_group(cluster = Group, Config) ->
-    Config1 =
-        rabbit_ct_helpers:set_config(Config, [{rmq_nodes_clustered, true}]),
-    Config2 =
-        rabbit_ct_helpers:set_config(Config1,
-                                     [{rmq_nodes_count, 3},
-                                      {rmq_nodename_suffix, Group},
-                                      {tcp_ports_base}]),
-    Config3 =
-        rabbit_ct_helpers:set_config(Config2,
-                                     {rabbitmq_ct_tls_verify, verify_none}),
-    rabbit_ct_helpers:run_setup_steps(Config3,
-                                      [fun(StepConfig) ->
-                                          rabbit_ct_helpers:merge_app_env(StepConfig,
-                                                                          {aten,
-                                                                           [{poll_interval,
-                                                                             1000}]})
-                                       end]
-                                      ++ rabbit_ct_broker_helpers:setup_steps());
+    Config1 = rabbit_ct_helpers:set_config(
+                Config, [{rmq_nodes_clustered, true},
+                         {rmq_nodes_count, 3},
+                         {rmq_nodename_suffix, Group},
+                         {tcp_ports_base},
+                         {rabbitmq_ct_tls_verify, verify_none}
+                        ]),
+    rabbit_ct_helpers:run_setup_steps(
+      Config1,
+      [fun(StepConfig) ->
+               rabbit_ct_helpers:merge_app_env(StepConfig,
+                                               {aten,
+                                                [{poll_interval,
+                                                  1000}]})
+       end]
+      ++ rabbit_ct_broker_helpers:setup_steps());
 init_per_group(_, Config) ->
     rabbit_ct_helpers:run_setup_steps(Config).
 
@@ -130,17 +131,57 @@ end_per_group(_, Config) ->
     rabbit_ct_helpers:run_steps(Config,
                                 rabbit_ct_broker_helpers:teardown_steps()).
 
-init_per_testcase(_TestCase, Config) ->
-    Config.
+init_per_testcase(close_connection_on_consumer_update_timeout = TestCase, Config) ->
+    ok = rabbit_ct_broker_helpers:rpc(Config,
+                                      0,
+                                      application,
+                                      set_env,
+                                      [rabbitmq_stream, request_timeout, 2000]),
+    rabbit_ct_helpers:testcase_started(Config, TestCase);
+init_per_testcase(TestCase, Config) ->
+    rabbit_ct_helpers:testcase_started(Config, TestCase).
 
-end_per_testcase(sac_ff, Config) ->
-    rabbit_ct_broker_helpers:rpc(Config,
-                                 0,
-                                 rabbit_feature_flags,
-                                 enable,
-                                 [stream_single_active_consumer]),
-    ok;
-end_per_testcase(_Test, _Config) ->
+end_per_testcase(filtering_ff = TestCase, Config) ->
+    _ = rabbit_ct_broker_helpers:rpc(Config,
+                                     0,
+                                     rabbit_feature_flags,
+                                     enable,
+                                     [stream_filtering]),
+    rabbit_ct_helpers:testcase_finished(Config, TestCase);
+end_per_testcase(close_connection_on_consumer_update_timeout = TestCase, Config) ->
+    ok = rabbit_ct_broker_helpers:rpc(Config,
+                                      0,
+                                      application,
+                                      set_env,
+                                      [rabbitmq_stream, request_timeout, 60000]),
+    rabbit_ct_helpers:testcase_finished(Config, TestCase);
+end_per_testcase(TestCase, Config) ->
+    rabbit_ct_helpers:testcase_finished(Config, TestCase).
+
+filtering_ff(Config) ->
+    Stream = atom_to_binary(?FUNCTION_NAME, utf8),
+    Transport = gen_tcp,
+    Port = get_stream_port(Config),
+    Opts = [{active, false}, {mode, binary}],
+    {ok, S} = Transport:connect("localhost", Port, Opts),
+    C0 = rabbit_stream_core:init(0),
+    C1 = test_peer_properties(Transport, S, C0),
+    C2 = test_authenticate(Transport, S, C1),
+    C3 = test_create_stream(Transport, S, Stream, C2),
+    PublisherId = 42,
+    C4 = test_declare_publisher(Transport, S, PublisherId, Stream, C3),
+    Body = <<"hello">>,
+    C5 = test_publish_confirm(Transport, S, publish_v2, PublisherId, Body,
+                               publish_error, C4),
+    SubscriptionId = 42,
+    C6 = test_subscribe(Transport, S, SubscriptionId, Stream,
+                        #{<<"filter.0">> => <<"foo">>},
+                        ?RESPONSE_CODE_PRECONDITION_FAILED,
+                        C5),
+
+    C7 = test_delete_stream(Transport, S, Stream, C6),
+    _C8 = test_close(Transport, S, C7),
+    closed = wait_for_socket_close(Transport, S, 10),
     ok.
 
 test_global_counters(Config) ->
@@ -182,6 +223,109 @@ test_stream(Config) ->
 test_stream_tls(Config) ->
     Stream = atom_to_binary(?FUNCTION_NAME, utf8),
     test_server(ssl, Stream, Config),
+    ok.
+
+test_publish_v2(Config) ->
+    Stream = atom_to_binary(?FUNCTION_NAME, utf8),
+    Transport = gen_tcp,
+    Port = get_stream_port(Config),
+    Opts = [{active, false}, {mode, binary}],
+    {ok, S} =
+        Transport:connect("localhost", Port, Opts),
+    C0 = rabbit_stream_core:init(0),
+    C1 = test_peer_properties(Transport, S, C0),
+    C2 = test_authenticate(Transport, S, C1),
+    C3 = test_create_stream(Transport, S, Stream, C2),
+    PublisherId = 42,
+    C4 = test_declare_publisher(Transport, S, PublisherId, Stream, C3),
+    Body = <<"hello">>,
+    C5 = test_publish_confirm(Transport, S, publish_v2, PublisherId, Body,
+                              publish_confirm, C4),
+    C6 = test_publish_confirm(Transport, S, publish_v2, PublisherId, Body,
+                              publish_confirm, C5),
+    SubscriptionId = 42,
+    C7 = test_subscribe(Transport, S, SubscriptionId, Stream,
+                        #{<<"filter.0">> => <<"foo">>},
+                        ?RESPONSE_CODE_OK,
+                        C6),
+    C8 = test_deliver(Transport, S, SubscriptionId, 0, Body, C7),
+    C8b = test_deliver(Transport, S, SubscriptionId, 1, Body, C8),
+
+    C9 = test_unsubscribe(Transport, S, SubscriptionId, C8b),
+
+    C10 = test_delete_stream(Transport, S, Stream, C9),
+    _C11 = test_close(Transport, S, C10),
+    closed = wait_for_socket_close(Transport, S, 10),
+    ok.
+
+test_metadata(Config) ->
+    Stream = atom_to_binary(?FUNCTION_NAME, utf8),
+    Transport = gen_tcp,
+    Port = get_stream_port(Config),
+    FirstNode = get_node_name(Config, 0),
+    NodeInMaintenance = get_node_name(Config, 1),
+    {ok, S} =
+        Transport:connect("localhost", Port,
+                          [{active, false}, {mode, binary}]),
+    C0 = rabbit_stream_core:init(0),
+    C1 = test_peer_properties(Transport, S, C0),
+    C2 = test_authenticate(Transport, S, C1),
+    C3 = test_create_stream(Transport, S, Stream, C2),
+    GetStreamNodes =
+        fun() ->
+           MetadataFrame =
+               rabbit_stream_core:frame({request, 1, {metadata, [Stream]}}),
+           ok = Transport:send(S, MetadataFrame),
+           {CmdMetadata, _} = receive_commands(Transport, S, C3),
+           {response, 1,
+            {metadata, _Nodes, #{Stream := {Leader = {_H, _P}, Replicas}}}} =
+               CmdMetadata,
+           [Leader | Replicas]
+        end,
+    rabbit_ct_helpers:await_condition(fun() ->
+                                         length(GetStreamNodes()) == 3
+                                      end),
+    rabbit_ct_broker_helpers:rpc(Config,
+                                 NodeInMaintenance,
+                                 rabbit_maintenance,
+                                 drain,
+                                 []),
+
+    IsBeingDrained =
+        fun() ->
+           rabbit_ct_broker_helpers:rpc(Config,
+                                        FirstNode,
+                                        rabbit_maintenance,
+                                        is_being_drained_consistent_read,
+                                        [NodeInMaintenance])
+        end,
+    rabbit_ct_helpers:await_condition(fun() -> IsBeingDrained() end),
+
+    rabbit_ct_helpers:await_condition(fun() ->
+                                         length(GetStreamNodes()) == 2
+                                      end),
+
+    rabbit_ct_broker_helpers:rpc(Config,
+                                 NodeInMaintenance,
+                                 rabbit_maintenance,
+                                 revive,
+                                 []),
+
+    rabbit_ct_helpers:await_condition(fun() -> IsBeingDrained() =:= false
+                                      end),
+
+    rabbit_ct_helpers:await_condition(fun() ->
+                                         length(GetStreamNodes()) == 3
+                                      end),
+
+    DeleteStreamFrame =
+        rabbit_stream_core:frame({request, 1, {delete_stream, Stream}}),
+    ok = Transport:send(S, DeleteStreamFrame),
+    {CmdDelete, C4} = receive_commands(Transport, S, C3),
+    ?assertMatch({response, 1, {delete_stream, ?RESPONSE_CODE_OK}},
+                 CmdDelete),
+    _C5 = test_close(Transport, S, C4),
+    closed = wait_for_socket_close(Transport, S, 10),
     ok.
 
 test_gc_consumers(Config) ->
@@ -290,41 +434,6 @@ timeout_close_sent(Config) ->
     % Now, rabbit_stream_reader is in state close_sent.
     ?assertEqual(closed, wait_for_socket_close(gen_tcp, S, 1)).
 
-sac_ff(Config) ->
-    Port = get_stream_port(Config),
-    {ok, S} =
-        gen_tcp:connect("localhost", Port, [{active, false}, {mode, binary}]),
-    C = rabbit_stream_core:init(0),
-    test_peer_properties(gen_tcp, S, C),
-    test_authenticate(gen_tcp, S, C),
-    Stream = atom_to_binary(?FUNCTION_NAME, utf8),
-    test_create_stream(gen_tcp, S, Stream, C),
-    test_declare_publisher(gen_tcp, S, 1, Stream, C),
-    ?awaitMatch(#{publishers := 1}, get_global_counters(Config), ?WAIT),
-    Body = <<"hello">>,
-    test_publish_confirm(gen_tcp, S, 1, Body, C),
-
-    SubscriptionId = 42,
-    SubCmd =
-        {request, 1,
-         {subscribe,
-          SubscriptionId,
-          Stream,
-          0,
-          10,
-          #{<<"single-active-consumer">> => <<"true">>,
-            <<"name">> => <<"foo">>}}},
-    SubscribeFrame = rabbit_stream_core:frame(SubCmd),
-    ok = gen_tcp:send(S, SubscribeFrame),
-    {Cmd, C} = receive_commands(gen_tcp, S, C),
-    ?assertMatch({response, 1,
-                  {subscribe, ?RESPONSE_CODE_PRECONDITION_FAILED}},
-                 Cmd),
-    test_delete_stream(gen_tcp, S, Stream, C),
-    test_close(gen_tcp, S, C),
-    closed = wait_for_socket_close(gen_tcp, S, 10),
-    ok.
-
 max_segment_size_bytes_validation(Config) ->
     Transport = gen_tcp,
     Port = get_stream_port(Config),
@@ -346,6 +455,69 @@ max_segment_size_bytes_validation(Config) ->
                   {create_stream, ?RESPONSE_CODE_PRECONDITION_FAILED}},
                  Cmd),
     test_close(Transport, S, C3),
+    ok.
+
+close_connection_on_consumer_update_timeout(Config) ->
+    Transport = gen_tcp,
+    Port = get_stream_port(Config),
+    {ok, S} =
+    Transport:connect("localhost", Port,
+                      [{active, false}, {mode, binary}]),
+    C0 = rabbit_stream_core:init(0),
+    C1 = test_peer_properties(Transport, S, C0),
+    C2 = test_authenticate(Transport, S, C1),
+    Stream = atom_to_binary(?FUNCTION_NAME, utf8),
+    C3 = test_create_stream(Transport, S, Stream, C2),
+
+    SubId = 42,
+    C4 = test_subscribe(Transport, S, SubId, Stream,
+                        #{<<"single-active-consumer">> => <<"true">>,
+                          <<"name">> => <<"foo">>},
+                        ?RESPONSE_CODE_OK,
+                        C3),
+    {Cmd, _C5} = receive_commands(Transport, S, C4),
+    ?assertMatch({request, _, {consumer_update, SubId, true}}, Cmd),
+    closed = wait_for_socket_close(Transport, S, 10),
+    {ok, Sb} =
+    Transport:connect("localhost", Port,
+                      [{active, false}, {mode, binary}]),
+    Cb0 = rabbit_stream_core:init(0),
+    Cb1 = test_peer_properties(Transport, Sb, Cb0),
+    Cb2 = test_authenticate(Transport, Sb, Cb1),
+    Cb3 = test_delete_stream(Transport, Sb, Stream, Cb2, false),
+    _Cb4 = test_close(Transport, Sb, Cb3),
+    closed = wait_for_socket_close(Transport, Sb, 10),
+    ok.
+
+set_filter_size(Config) ->
+    Stream = atom_to_binary(?FUNCTION_NAME, utf8),
+    Transport = gen_tcp,
+    Port = get_stream_port(Config),
+    Opts = [{active, false}, {mode, binary}],
+    {ok, S} = Transport:connect("localhost", Port, Opts),
+    C0 = rabbit_stream_core:init(0),
+    C1 = test_peer_properties(Transport, S, C0),
+    C2 = test_authenticate(Transport, S, C1),
+
+    Tests = [
+             {128, ?RESPONSE_CODE_OK},
+             {15, ?RESPONSE_CODE_PRECONDITION_FAILED},
+             {256, ?RESPONSE_CODE_PRECONDITION_FAILED}
+            ],
+
+    C3 = lists:foldl(fun({Size, ExpectedResponseCode}, Conn0) ->
+                             Frame = rabbit_stream_core:frame(
+                                       {request, 1,
+                                        {create_stream, Stream,
+                                         #{<<"stream-filter-size-bytes">> => integer_to_binary(Size)}}}),
+                             ok = Transport:send(S, Frame),
+                             {Cmd, Conn1} = receive_commands(Transport, S, Conn0),
+                             ?assertMatch({response, 1, {create_stream, ExpectedResponseCode}}, Cmd),
+                             Conn1
+                     end, C2, Tests),
+
+    _ = test_close(Transport, S, C3),
+    closed = wait_for_socket_close(Transport, S, 10),
     ok.
 
 consumer_count(Config) ->
@@ -414,9 +586,15 @@ test_server(Transport, Stream, Config) ->
                 application:ensure_all_started(ssl),
                 get_stream_port_tls(Config)
         end,
+    Opts =
+        case Transport of
+            gen_tcp ->
+                [{active, false}, {mode, binary}];
+            ssl ->
+                [{active, false}, {mode, binary}, {verify, verify_none}]
+        end,
     {ok, S} =
-        Transport:connect("localhost", Port,
-                          [{active, false}, {mode, binary}]),
+        Transport:connect("localhost", Port, Opts),
     C0 = rabbit_stream_core:init(0),
     C1 = test_peer_properties(Transport, S, C0),
     C2 = test_authenticate(Transport, S, C1),
@@ -434,12 +612,13 @@ test_server(Transport, Stream, Config) ->
     ?awaitMatch(#{consumers := 1}, get_global_counters(Config), ?WAIT),
     CounterKeys = maps:keys(get_osiris_counters(Config)),
     %% find the counter key for the subscriber
-    {value, SubKey} = lists:search(fun ({rabbit_stream_reader, Q, Id, _}) ->
-                                           Q == QName andalso
-                                           Id == SubscriptionId;
-                                       (_) ->
-                                           false
-                                   end, CounterKeys),
+    {value, SubKey} =
+        lists:search(fun ({rabbit_stream_reader, Q, Id, _}) ->
+                             Q == QName andalso Id == SubscriptionId;
+                         (_) ->
+                             false
+                     end,
+                     CounterKeys),
     C8 = test_deliver(Transport, S, SubscriptionId, 0, Body, C7),
     C8b = test_deliver(Transport, S, SubscriptionId, 1, Body, C8),
 
@@ -522,12 +701,21 @@ test_create_stream(Transport, S, Stream, C0) ->
     C.
 
 test_delete_stream(Transport, S, Stream, C0) ->
+    test_delete_stream(Transport, S, Stream, C0, true).
+
+test_delete_stream(Transport, S, Stream, C0, false) ->
+    do_test_delete_stream(Transport, S, Stream, C0);
+test_delete_stream(Transport, S, Stream, C0, true) ->
+    C1 = do_test_delete_stream(Transport, S, Stream, C0),
+    test_metadata_update_stream_deleted(Transport, S, Stream, C1).
+
+do_test_delete_stream(Transport, S, Stream, C0) ->
     DeleteStreamFrame =
         rabbit_stream_core:frame({request, 1, {delete_stream, Stream}}),
     ok = Transport:send(S, DeleteStreamFrame),
     {Cmd, C1} = receive_commands(Transport, S, C0),
     ?assertMatch({response, 1, {delete_stream, ?RESPONSE_CODE_OK}}, Cmd),
-    test_metadata_update_stream_deleted(Transport, S, Stream, C1).
+    C1.
 
 test_metadata_update_stream_deleted(Transport, S, Stream, C0) ->
     {Meta, C1} = receive_commands(Transport, S, C0),
@@ -548,13 +736,36 @@ test_declare_publisher(Transport, S, PublisherId, Stream, C0) ->
     C.
 
 test_publish_confirm(Transport, S, PublisherId, Body, C0) ->
+    test_publish_confirm(Transport, S, publish, PublisherId, Body,
+                         publish_confirm, C0).
+
+test_publish_confirm(Transport, S, publish = PublishCmd, PublisherId, Body,
+                     ExpectedConfirmCommand,C0) ->
     BodySize = byte_size(Body),
     Messages = [<<1:64, 0:1, BodySize:31, Body:BodySize/binary>>],
     PublishFrame =
-        rabbit_stream_core:frame({publish, PublisherId, 1, Messages}),
+        rabbit_stream_core:frame({PublishCmd, PublisherId, 1, Messages}),
     ok = Transport:send(S, PublishFrame),
     {Cmd, C} = receive_commands(Transport, S, C0),
-    ?assertMatch({publish_confirm, PublisherId, [1]}, Cmd),
+    ?assertMatch({ExpectedConfirmCommand, PublisherId, [1]}, Cmd),
+    C;
+test_publish_confirm(Transport, S, publish_v2 = PublishCmd, PublisherId, Body,
+                     ExpectedConfirmCommand, C0) ->
+    BodySize = byte_size(Body),
+    FilterValue = <<"foo">>,
+    FilterValueSize = byte_size(FilterValue),
+    Messages = [<<1:64, FilterValueSize:16, FilterValue:FilterValueSize/binary,
+                  0:1, BodySize:31, Body:BodySize/binary>>],
+    PublishFrame =
+        rabbit_stream_core:frame({PublishCmd, PublisherId, 1, Messages}),
+    ok = Transport:send(S, PublishFrame),
+    {Cmd, C} = receive_commands(Transport, S, C0),
+    case ExpectedConfirmCommand of
+        publish_confirm ->
+            ?assertMatch({ExpectedConfirmCommand, PublisherId, [1]}, Cmd);
+        publish_error ->
+            ?assertMatch({ExpectedConfirmCommand, PublisherId, _, [1]}, Cmd)
+    end,
     C.
 
 test_subscribe(Transport, S, SubscriptionId, Stream, C0) ->
@@ -563,6 +774,7 @@ test_subscribe(Transport, S, SubscriptionId, Stream, C0) ->
                    SubscriptionId,
                    Stream,
                    #{<<"random">> => <<"thing">>},
+                   ?RESPONSE_CODE_OK,
                    C0).
 
 test_subscribe(Transport,
@@ -570,6 +782,7 @@ test_subscribe(Transport,
                SubscriptionId,
                Stream,
                SubscriptionProperties,
+               ExpectedResponseCode,
                C0) ->
     SubCmd =
         {request, 1,
@@ -577,20 +790,16 @@ test_subscribe(Transport,
     SubscribeFrame = rabbit_stream_core:frame(SubCmd),
     ok = Transport:send(S, SubscribeFrame),
     {Cmd, C} = receive_commands(Transport, S, C0),
-    ?assertMatch({response, 1, {subscribe, ?RESPONSE_CODE_OK}}, Cmd),
+    ?assertMatch({response, 1, {subscribe, ExpectedResponseCode}}, Cmd),
     C.
 
-test_unsubscribe(Transport,
-                 Socket,
-                 SubscriptionId, C0) ->
-    UnsubCmd = {request, 1,
-                {unsubscribe, SubscriptionId}},
+test_unsubscribe(Transport, Socket, SubscriptionId, C0) ->
+    UnsubCmd = {request, 1, {unsubscribe, SubscriptionId}},
     UnsubscribeFrame = rabbit_stream_core:frame(UnsubCmd),
-    ok = Transport:send(Socket, UnsubscribeFrame ),
+    ok = Transport:send(Socket, UnsubscribeFrame),
     {Cmd, C} = receive_commands(Transport, Socket, C0),
     ?assertMatch({response, 1, {unsubscribe, ?RESPONSE_CODE_OK}}, Cmd),
     C.
-
 
 test_deliver(Transport, S, SubscriptionId, COffset, Body, C0) ->
     ct:pal("test_deliver ", []),
@@ -708,6 +917,7 @@ get_osiris_counters(Config) ->
                                  osiris_counters,
                                  overview,
                                  []).
+
 get_global_counters(Config) ->
     maps:get([{protocol, stream}],
              rabbit_ct_broker_helpers:rpc(Config,

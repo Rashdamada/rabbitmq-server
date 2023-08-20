@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_stomp_util).
@@ -292,6 +292,9 @@ build_argument(?HEADER_X_MESSAGE_TTL, Val) ->
 build_argument(?HEADER_X_MAX_AGE, Val) ->
     {list_to_binary(?HEADER_X_MAX_AGE), longstr,
      list_to_binary(string:strip(Val))};
+build_argument(?HEADER_X_STREAM_MAX_SEGMENT_SIZE_BYTES, Val) ->
+    {list_to_binary(?HEADER_X_STREAM_MAX_SEGMENT_SIZE_BYTES), long,
+     list_to_integer(string:strip(Val))};
 build_argument(?HEADER_X_QUEUE_TYPE, Val) ->
   {list_to_binary(?HEADER_X_QUEUE_TYPE), longstr,
     list_to_binary(string:strip(Val))}.
@@ -305,7 +308,7 @@ build_params(EndPoint, Headers) ->
                          end,
                          [],
                          Headers),
-    rabbit_misc:plmerge(Params, default_params(EndPoint)).
+    rabbit_misc:plmerge(default_params(EndPoint), Params).
 
 build_param(?HEADER_PERSISTENT, Val) ->
     {durable, string_to_boolean(Val)};
@@ -323,7 +326,7 @@ default_params({queue, _}) ->
     [{durable, true}];
 
 default_params({exchange, _}) ->
-    [{exclusive, false}, {auto_delete, true}];
+    [{exclusive, true}, {auto_delete, true}];
 
 default_params({topic, _}) ->
     [{exclusive, false}, {auto_delete, true}];

@@ -2,7 +2,7 @@
 ## License, v. 2.0. If a copy of the MPL was not distributed with this
 ## file, You can obtain one at https://mozilla.org/MPL/2.0/.
 ##
-## Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+## Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 
 defmodule RabbitMQ.CLI.Core.Listeners do
   import Record, only: [defrecord: 3, extract: 2]
@@ -12,6 +12,11 @@ defmodule RabbitMQ.CLI.Core.Listeners do
   #
   # API
   #
+
+  # TODO: Remove when we require Elixir 1.15
+  if function_exported?(Mix, :ensure_application!, 1) do
+    Mix.ensure_application!(:public_key)
+  end
 
   defrecord :certificate,
             :Certificate,

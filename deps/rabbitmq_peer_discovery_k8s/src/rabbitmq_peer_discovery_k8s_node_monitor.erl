@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 %% This gen_server receives node monitoring events from net_kernel
@@ -35,11 +35,11 @@ handle_cast(_Msg, State) ->
 
 handle_info({nodeup, Node}, State) ->
     Details = io_lib:format("Node ~ts is up ", [Node]),
-    rabbit_peer_discovery_k8s:send_event("Normal", "NodeUp", Details),
+    _ = rabbit_peer_discovery_k8s:send_event("Normal", "NodeUp", Details),
     {noreply, State};
 handle_info({nodedown, Node}, State) ->
     Details = io_lib:format("Node ~ts is down or disconnected ", [Node]),
-    rabbit_peer_discovery_k8s:send_event("Warning", "NodeDown", Details),
+    _ = rabbit_peer_discovery_k8s:send_event("Warning", "NodeDown", Details),
     {noreply, State}.
 
 terminate(_Arg, _State) ->

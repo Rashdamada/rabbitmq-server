@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 
@@ -44,7 +44,8 @@
 -export([import_raw/1, import_raw/2, import_parsed/1, import_parsed/2,
          import_parsed_with_hashing/1, import_parsed_with_hashing/2,
          apply_defs/2, apply_defs/3,
-         should_skip_if_unchanged/0]).
+         should_skip_if_unchanged/0
+        ]).
 
 -export([all_definitions/0]).
 -export([
@@ -53,7 +54,13 @@
   list_exchanges/0, list_queues/0, list_bindings/0,
   is_internal_parameter/1
 ]).
--export([decode/1, decode/2, args/1]).
+-export([decode/1, decode/2, args/1, validate_definitions/1]).
+
+%% for tests
+-export([
+    maybe_load_definitions_from_local_filesystem_if_unchanged/3,
+    maybe_load_definitions_from_pluggable_source_if_unchanged/2
+]).
 
 -import(rabbit_misc, [pget/2, pget/3]).
 -import(rabbit_data_coercion, [to_binary/1]).
@@ -95,6 +102,21 @@ maybe_load_definitions() ->
             % Extensible sources
             maybe_load_definitions_from_pluggable_source(rabbit, definitions);
         {error, E} -> {error, E}
+    end.
+
+validate_definitions(Defs) when is_list(Defs) ->
+    lists:foldl(fun(_Body, false) ->
+                     false;
+                   (Body, true) ->
+                       case decode(Body) of
+                           {ok, _Map}    -> true;
+                           {error, _Err} -> false
+                       end
+                end, true, Defs);
+validate_definitions(Body) when is_binary(Body) ->
+    case decode(Body) of
+        {ok, _Map}    -> true;
+        {error, _Err} -> false
     end.
 
 -spec import_raw(Body :: binary() | iolist()) -> ok | {error, term()}.
@@ -264,24 +286,30 @@ maybe_load_definitions_from_local_filesystem(App, Key) ->
         {ok, Path} ->
             IsDir = filelib:is_dir(Path),
             Mod = rabbit_definitions_import_local_filesystem,
+            rabbit_log:debug("Will use module ~ts to import definitions", [Mod]),
 
             case should_skip_if_unchanged() of
                 false ->
-                    rabbit_log:debug("Will use module ~ts to import definitions", [Mod]),
+                    rabbit_log:debug("Will re-import definitions even if they have not changed"),
                     Mod:load(IsDir, Path);
                 true ->
-                    Algo = rabbit_definitions_hashing:hashing_algorithm(),
-                    rabbit_log:debug("Will use module ~ts to import definitions (if definition file/directory has changed, hashing algo: ~ts)", [Mod, Algo]),
-                    CurrentHash = rabbit_definitions_hashing:stored_global_hash(),
-                    rabbit_log:debug("Previously stored hash value of imported definitions: ~ts...", [binary:part(rabbit_misc:hexify(CurrentHash), 0, 12)]),
-                    case Mod:load_with_hashing(IsDir, Path, CurrentHash, Algo) of
-                        CurrentHash ->
-                            rabbit_log:info("Hash value of imported definitions matches current contents");
-                        UpdatedHash ->
-                            rabbit_log:debug("Hash value of imported definitions has changed to ~ts", [binary:part(rabbit_misc:hexify(UpdatedHash), 0, 12)]),
-                            rabbit_definitions_hashing:store_global_hash(UpdatedHash)
-                    end
+                    maybe_load_definitions_from_local_filesystem_if_unchanged(Mod, IsDir, Path)
             end
+    end.
+
+maybe_load_definitions_from_local_filesystem_if_unchanged(Mod, IsDir, Path) ->
+    Algo = rabbit_definitions_hashing:hashing_algorithm(),
+    rabbit_log:debug("Will import definitions only if definition file/directory has changed, hashing algo: ~ts", [Algo]),
+    CurrentHash = rabbit_definitions_hashing:stored_global_hash(),
+    rabbit_log:debug("Previously stored hash value of imported definitions: ~ts...", [binary:part(rabbit_misc:hexify(CurrentHash), 0, 12)]),
+    case Mod:load_with_hashing(IsDir, Path, CurrentHash, Algo) of
+        {error, Err} ->
+            {error, Err};
+        CurrentHash ->
+            rabbit_log:info("Hash value of imported definitions matches current contents");
+        UpdatedHash ->
+            rabbit_log:debug("Hash value of imported definitions has changed to ~ts", [binary:part(rabbit_misc:hexify(UpdatedHash), 0, 12)]),
+            rabbit_definitions_hashing:store_global_hash(UpdatedHash)
     end.
 
 maybe_load_definitions_from_pluggable_source(App, Key) ->
@@ -295,25 +323,32 @@ maybe_load_definitions_from_pluggable_source(App, Key) ->
                     {error, "definition import source is configured but definitions.import_backend is not set"};
                 ModOrAlias ->
                     Mod = normalize_backend_module(ModOrAlias),
-                    case should_skip_if_unchanged() of
-                        false ->
-                            rabbit_log:debug("Will use module ~ts to import definitions", [Mod]),
-                            Mod:load(Proplist);
-                        true ->
-                            rabbit_log:debug("Will use module ~ts to import definitions (if definition file/directory/source has changed)", [Mod]),
-                            CurrentHash = rabbit_definitions_hashing:stored_global_hash(),
-                            rabbit_log:debug("Previously stored hash value of imported definitions: ~ts...", [binary:part(rabbit_misc:hexify(CurrentHash), 0, 12)]),
-                            Algo = rabbit_definitions_hashing:hashing_algorithm(),
-                            case Mod:load_with_hashing(Proplist, CurrentHash, Algo) of
-                                CurrentHash ->
-                                    rabbit_log:info("Hash value of imported definitions matches current contents");
-                                UpdatedHash ->
-                                    rabbit_log:debug("Hash value of imported definitions has changed to ~ts...", [binary:part(rabbit_misc:hexify(CurrentHash), 0, 12)]),
-                                    rabbit_definitions_hashing:store_global_hash(UpdatedHash)
-                            end
-                    end
+                    maybe_load_definitions_from_pluggable_source_if_unchanged(Mod, Proplist)
             end
     end.
+
+maybe_load_definitions_from_pluggable_source_if_unchanged(Mod, Proplist) ->
+    case should_skip_if_unchanged() of
+        false ->
+            rabbit_log:debug("Will use module ~ts to import definitions", [Mod]),
+            Mod:load(Proplist);
+        true ->
+            rabbit_log:debug("Will use module ~ts to import definitions (if definition file/directory/source has changed)", [Mod]),
+            CurrentHash = rabbit_definitions_hashing:stored_global_hash(),
+            rabbit_log:debug("Previously stored hash value of imported definitions: ~ts...", [binary:part(rabbit_misc:hexify(CurrentHash), 0, 12)]),
+            Algo = rabbit_definitions_hashing:hashing_algorithm(),
+            case Mod:load_with_hashing(Proplist, CurrentHash, Algo) of
+                {error, Err} ->
+                    {error, Err};
+                CurrentHash ->
+                    rabbit_log:info("Hash value of imported definitions matches current contents");
+                UpdatedHash ->
+                    rabbit_log:debug("Hash value of imported definitions has changed to ~ts...", [binary:part(rabbit_misc:hexify(CurrentHash), 0, 12)]),
+                    rabbit_definitions_hashing:store_global_hash(UpdatedHash)
+            end
+    end.
+
+
 
 normalize_backend_module(local_filesystem) ->
     rabbit_definitions_import_local_filesystem;
@@ -467,13 +502,14 @@ apply_defs(Map, ActingUser, SuccessFun, VHost) when is_function(SuccessFun); is_
 
 sequential_for_all(Category, ActingUser, Definitions, Fun) ->
     try
-        sequential_for_all0(Category, ActingUser, Definitions, Fun)
+        sequential_for_all0(Category, ActingUser, Definitions, Fun),
+        ok
     after
         rabbit_runtime:gc_all_processes()
     end.
 
 sequential_for_all0(Category, ActingUser, Definitions, Fun) ->
-    case maps:get(rabbit_data_coercion:to_atom(Category), Definitions, undefined) of
+    _ = case maps:get(rabbit_data_coercion:to_atom(Category), Definitions, undefined) of
         undefined -> ok;
         List      ->
             case length(List) of
@@ -484,20 +520,23 @@ sequential_for_all0(Category, ActingUser, Definitions, Fun) ->
                  %% keys are expected to be atoms
                  Fun(atomize_keys(M), ActingUser)
              end || M <- List, is_map(M)]
-    end.
+    end,
+    ok.
 
 sequential_for_all(Name, ActingUser, Definitions, VHost, Fun) ->
     try
-        sequential_for_all0(Name, ActingUser, Definitions, VHost, Fun)
+        sequential_for_all0(Name, ActingUser, Definitions, VHost, Fun),
+        ok
     after
         rabbit_runtime:gc_all_processes()
     end.
 
 sequential_for_all0(Name, ActingUser, Definitions, VHost, Fun) ->
-    case maps:get(rabbit_data_coercion:to_atom(Name), Definitions, undefined) of
+    _ = case maps:get(rabbit_data_coercion:to_atom(Name), Definitions, undefined) of
         undefined -> ok;
-        List      -> [Fun(VHost, atomize_keys(M), ActingUser) || M <- List, is_map(M)]
-    end.
+        List      -> _ = [Fun(VHost, atomize_keys(M), ActingUser) || M <- List, is_map(M)]
+    end,
+    ok.
 
 concurrent_for_all(Category, ActingUser, Definitions, Fun) ->
     try
@@ -517,7 +556,8 @@ concurrent_for_all0(Category, ActingUser, Definitions, Fun) ->
             WorkPoolFun = fun(M) ->
                                   Fun(atomize_keys(M), ActingUser)
                           end,
-            do_concurrent_for_all(List, WorkPoolFun)
+            do_concurrent_for_all(List, WorkPoolFun),
+            ok
     end.
 
 concurrent_for_all(Name, ActingUser, Definitions, VHost, Fun) ->
@@ -545,7 +585,7 @@ do_concurrent_for_all(List, WorkPoolFun) ->
          worker_pool:submit_async(
            ?IMPORT_WORK_POOL,
            fun() ->
-                   try
+                   _ = try
                        WorkPoolFun(M)
                    catch {error, E} -> gatherer:in(Gatherer, {error, E});
                          _:E        -> gatherer:in(Gatherer, {error, E})

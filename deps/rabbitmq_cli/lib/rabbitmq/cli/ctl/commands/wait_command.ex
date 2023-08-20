@@ -2,7 +2,7 @@
 ## License, v. 2.0. If a copy of the MPL was not distributed with this
 ## file, You can obtain one at https://mozilla.org/MPL/2.0/.
 ##
-## Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+## Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 
 defmodule RabbitMQ.CLI.Ctl.Commands.WaitCommand do
   alias RabbitMQ.CLI.Core.{Helpers, Validators}
@@ -155,7 +155,7 @@ defmodule RabbitMQ.CLI.Ctl.Commands.WaitCommand do
   end
 
   defp wait_for_pid_funs(node_name, app_names, timeout, quiet) do
-    app_names_formatted = :io_lib.format('~p', [app_names])
+    app_names_formatted = :io_lib.format(~c"~p", [app_names])
 
     [
       log_param(
@@ -207,10 +207,7 @@ defmodule RabbitMQ.CLI.Ctl.Commands.WaitCommand do
   end
 
   defp wait_for_application(node_name, :rabbit_and_plugins) do
-    case :rabbit.await_startup(node_name) do
-      {:badrpc, err} -> {:error, {:badrpc, err}}
-      other -> other
-    end
+    :rabbit.await_startup(node_name)
   end
 
   defp wait_for_erlang_distribution(pid, node_name, timeout) do

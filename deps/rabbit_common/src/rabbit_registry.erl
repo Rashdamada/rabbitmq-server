@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_registry).
@@ -124,6 +124,7 @@ sanity_check_module(ClassModule, Module) ->
 % rabbit_registry_class behaviour itself: export added_to_rabbit_registry/2
 % and removed_from_rabbit_registry/1 functions.
 class_module(exchange)            -> rabbit_exchange_type;
+class_module(queue)               -> rabbit_queue_type;
 class_module(auth_mechanism)      -> rabbit_auth_mechanism;
 class_module(runtime_parameter)   -> rabbit_runtime_parameter;
 class_module(exchange_decorator)  -> rabbit_exchange_decorator;

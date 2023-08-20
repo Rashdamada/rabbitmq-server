@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 -module(mqtt_machine_v0).
 -behaviour(ra_machine).
@@ -19,10 +19,10 @@
 -type config() :: map().
 
 -type reply() :: {ok, term()} | {error, term()}.
--type client_id() :: term().
+-type client_id_ra() :: term().
 
--type command() :: {register, client_id(), pid()} |
-                   {unregister, client_id(), pid()} |
+-type command() :: {register, client_id_ra(), pid()} |
+                   {unregister, client_id_ra(), pid()} |
                    list.
 
 -spec init(config()) -> state().
@@ -113,6 +113,8 @@ apply(_Meta, Unknown, State) ->
     logger:error("MQTT Raft state machine received an unknown command ~tp", [Unknown]),
     {State, {error, {unknown_command, Unknown}}, []}.
 
+-spec state_enter(ra_server:ra_state(), state()) ->
+    ra_machine:effects().
 state_enter(leader, State) ->
     %% re-request monitors for all known pids, this would clean up
     %% records for all connections are no longer around, e.g. right after node restart
@@ -123,6 +125,7 @@ state_enter(_, _) ->
 %% ==========================
 
 %% Avoids blocking the Raft leader.
+-spec notify_connection(pid(), duplicate_id | decommission_node) -> pid().
 notify_connection(Pid, Reason) ->
   spawn(fun() -> gen_server2:cast(Pid, Reason) end).
 

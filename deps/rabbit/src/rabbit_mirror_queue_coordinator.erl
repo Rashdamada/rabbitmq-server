@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2010-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2010-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_mirror_queue_coordinator).
@@ -320,7 +320,7 @@ init([Q, GM, DeathFun, DepthFun]) when ?is_amqqueue(Q) ->
               undefined ->
                   {ok, GM2} = gm:start_link(
                                 QueueName, ?MODULE, [self()],
-                                fun rabbit_misc:execute_mnesia_transaction/1),
+                                fun rabbit_mnesia:execute_mnesia_transaction/1),
                   receive {joined, GM2, _Members} ->
                           ok
                   end,

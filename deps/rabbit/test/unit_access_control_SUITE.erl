@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2011-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2011-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(unit_access_control_SUITE).
@@ -153,13 +153,10 @@ login_with_credentials_but_no_password1(_Config) ->
     Password = <<"login_with_credentials_but_no_password-password">>,
     ok = rabbit_auth_backend_internal:add_user(Username, Password, <<"acting-user">>),
 
-    try
+    ?assertMatch(
+       {refused, _Message, [Username]},
         rabbit_auth_backend_internal:user_login_authentication(Username,
-                                                              [{key, <<"value">>}]),
-        ?assert(false)
-    catch exit:{unknown_auth_props, Username, [{key, <<"value">>}]} ->
-            ok
-    end,
+                                                              [{key, <<"value">>}])),
 
     ok = rabbit_auth_backend_internal:delete_user(Username, <<"acting-user">>),
 
@@ -391,7 +388,7 @@ topic_matching1(_Config) ->
                        lists:nth(11, Bindings), lists:nth(19, Bindings),
                        lists:nth(21, Bindings), lists:nth(28, Bindings)],
     exchange_op_callback(X, remove_bindings, [RemovedBindings]),
-    RemainingBindings = ordsets:to_list(
+    _RemainingBindings = ordsets:to_list(
                           ordsets:subtract(ordsets:from_list(Bindings),
                                            ordsets:from_list(RemovedBindings))),
 
@@ -416,14 +413,12 @@ topic_matching1(_Config) ->
        {"args-test",           ["t6", "t22", "t23", "t24", "t25", "t27"]}]),
 
     %% remove the entire exchange
-    exchange_op_callback(X, delete, [RemainingBindings]),
+    exchange_op_callback(X, delete, []),
     %% none should match now
     test_topic_expect_match(X, [{"a.b.c", []}, {"b.b.c", []}, {"", []}]),
     passed.
 
 exchange_op_callback(X, Fun, Args) ->
-    rabbit_misc:execute_mnesia_transaction(
-      fun () -> rabbit_exchange:callback(X, Fun, transaction, [X] ++ Args) end),
     rabbit_exchange:callback(X, Fun, none, [X] ++ Args).
 
 test_topic_expect_match(X, List) ->

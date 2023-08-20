@@ -2,7 +2,7 @@
 ## License, v. 2.0. If a copy of the MPL was not distributed with this
 ## file, You can obtain one at https://mozilla.org/MPL/2.0/.
 ##
-## Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+## Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 
 alias RabbitMQ.CLI.CommandBehaviour
 
@@ -14,7 +14,7 @@ defmodule RabbitMQ.CLI.Ctl.Commands.HelpCommand do
 
   @behaviour RabbitMQ.CLI.CommandBehaviour
 
-  def scopes(), do: [:ctl, :diagnostics, :plugins, :queues, :tanzu, :upgrade]
+  def scopes(), do: [:ctl, :diagnostics, :plugins, :queues, :streams, :vmware, :upgrade]
   def switches(), do: [list_commands: :boolean]
 
   def distribution(_), do: :none
@@ -28,7 +28,7 @@ defmodule RabbitMQ.CLI.Ctl.Commands.HelpCommand do
   end
 
   def run([command_name | _], opts) do
-    CommandModules.load(opts)
+    _ = CommandModules.load(opts)
 
     module_map = CommandModules.module_map(opts)
 
@@ -54,7 +54,7 @@ defmodule RabbitMQ.CLI.Ctl.Commands.HelpCommand do
   end
 
   def run([], opts) do
-    CommandModules.load(opts)
+    _ = CommandModules.load(opts)
 
     case opts[:list_commands] do
       true ->

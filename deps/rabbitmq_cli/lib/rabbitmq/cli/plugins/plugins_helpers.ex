@@ -2,7 +2,7 @@
 ## License, v. 2.0. If a copy of the MPL was not distributed with this
 ## file, You can obtain one at https://mozilla.org/MPL/2.0/.
 ##
-## Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+## Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 
 defmodule RabbitMQ.CLI.Plugins.Helpers do
   import RabbitMQ.CLI.Core.DataCoercion
@@ -79,7 +79,7 @@ defmodule RabbitMQ.CLI.Plugins.Helpers do
 
   def set_enabled_plugins(plugins, opts) do
     plugin_atoms = :lists.usort(for plugin <- plugins, do: to_atom(plugin))
-    require_rabbit_and_plugins(opts)
+    _ = require_rabbit_and_plugins(opts)
     {:ok, plugins_file} = enabled_plugins_file(opts)
     write_enabled_plugins(plugin_atoms, plugins_file, opts)
   end
@@ -223,7 +223,7 @@ defmodule RabbitMQ.CLI.Plugins.Helpers do
   defp add_all_to_path(plugins_directories) do
     directories = String.split(to_string(plugins_directories), path_separator())
 
-    Enum.map(directories, fn directory ->
+    Enum.each(directories, fn directory ->
       with {:ok, subdirs} <- File.ls(directory) do
         for subdir <- subdirs do
           Path.join([directory, subdir, "ebin"])

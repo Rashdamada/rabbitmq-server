@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2010-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2010-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_mirror_queue_master).
@@ -106,7 +106,7 @@ init_with_existing_bq(Q0, BQ, BQS) when ?is_amqqueue(Q0) ->
                   %% need to handle migration.
                   ok = rabbit_amqqueue:store_queue(Q3)
               end,
-        ok = rabbit_misc:execute_mnesia_transaction(Fun),
+        ok = rabbit_mnesia:execute_mnesia_transaction(Fun),
         {_MNode, SNodes} = rabbit_mirror_queue_misc:suggested_queue_nodes(Q0),
         %% We need synchronous add here (i.e. do not return until the
         %% mirror is running) so that when queue declaration is finished
@@ -494,14 +494,9 @@ set_queue_mode(Mode, State = #state { gm                  = GM,
 set_queue_version(Version, State = #state { gm                  = GM,
                                             backing_queue       = BQ,
                                             backing_queue_state = BQS }) ->
-    case rabbit_feature_flags:is_enabled(classic_mirrored_queue_version) of
-        true ->
-            ok = gm:broadcast(GM, {set_queue_version, Version}),
-            BQS1 = BQ:set_queue_version(Version, BQS),
-            State #state { backing_queue_state = BQS1 };
-        false ->
-            State
-    end.
+    ok = gm:broadcast(GM, {set_queue_version, Version}),
+    BQS1 = BQ:set_queue_version(Version, BQS),
+    State #state { backing_queue_state = BQS1 }.
 
 zip_msgs_and_acks(Msgs, AckTags, Accumulator,
                   #state { backing_queue = BQ,
@@ -518,7 +513,8 @@ zip_msgs_and_acks(Msgs, AckTags, Accumulator,
             master_state().
 
 promote_backing_queue_state(QName, CPid, BQ, BQS, GM, AckTags, Seen, KS) ->
-    {_MsgIds, BQS1} = BQ:requeue(AckTags, BQS),
+    {MsgIds, BQS1} = BQ:requeue(AckTags, BQS),
+    ok = gm:broadcast(GM, {requeue, MsgIds}),
     Len   = BQ:len(BQS1),
     Depth = BQ:depth(BQS1),
     true = Len == Depth, %% ASSERTION: everything must have been requeued

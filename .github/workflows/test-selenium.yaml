@@ -3,6 +3,7 @@ on:
   push:
     branches:
       - main
+      - v3.12.x
       - v3.11.x
       - bump-otp-for-oci
       - bump-rbe-*
@@ -21,18 +22,18 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 jobs:
-  selenimum:
+  selenium:
     runs-on: ubuntu-20.04
     strategy:
       fail-fast: false
       matrix:
         erlang_version:
-        - "25.2"
+        - "26.0"
         browser:
         - chrome
         include:
-        - erlang_version: "25.2"
-          elixir_version: 1.13.4
+        - erlang_version: "26.0"
+          elixir_version: 1.14.5
     env:
       SELENIUM_DIR: deps/rabbitmq_management/selenium
       DOCKER_NETWORK: rabbitmq_net
@@ -41,16 +42,18 @@ jobs:
       uses: actions/checkout@v3
 
     - name: Configure OTP & Elixir
-      uses: erlef/setup-beam@v1.15
+      uses: erlef/setup-beam@v1.16
       with:
         otp-version: ${{ matrix.erlang_version }}
         elixir-version: ${{ matrix.elixir_version }}
 
     - name: Mount Bazel Cache
-      uses: actions/cache@v3.0.11
+      uses: actions/cache@v3.3.1
       with:
         path: "/home/runner/repo-cache/"
-        key: repo-cache
+        key: ${{ runner.os }}-repo-cache-${{ hashFiles('MODULE.bazel','WORKSPACE','bazel/bzlmod/secondary_umbrella.bzl') }}
+        restore-keys: |
+          ${{ runner.os }}-repo-cache-
 
     - name: Configure Bazel
       run: |
@@ -91,13 +94,23 @@ jobs:
 
     - name: Run Suites
       run: |
-        ${SELENIUM_DIR}/run-suites.sh
+        RABBITMQ_DOCKER_IMAGE=bazel/packaging/docker-image:rabbitmq ${SELENIUM_DIR}/run-suites.sh
 
     - name: Upload Test Artifacts
       if: always()
-      uses: actions/upload-artifact@v3.1.1
+      uses: actions/upload-artifact@v3.1.2
       with:
         name: test-artifacts-${{ matrix.browser }}-${{ matrix.erlang_version }}
         path: |
           logs/*
           screens/*
+          /tmp/selenium/*
+
+  summary-selenium:
+    needs:
+    - selenium
+    runs-on: ubuntu-latest
+    steps:
+    - name: SUMMARY
+      run: |
+        echo "SUCCESS"

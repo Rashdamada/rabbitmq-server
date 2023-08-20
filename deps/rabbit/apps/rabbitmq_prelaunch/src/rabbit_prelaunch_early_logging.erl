@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2019-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2019-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_prelaunch_early_logging).
@@ -76,7 +76,7 @@ add_primary_filters() ->
 
 filter_discarded_message(#{level := error,
                            meta := #{error_logger := #{emulator := true, tag := error}},
-                           msg := {"~ts~n", Msg}}, OnMatch) ->
+                           msg := {"~s~n", Msg}}, OnMatch) ->
     case string:find(Msg, "Discarding message") of
         nomatch ->
             ignore;

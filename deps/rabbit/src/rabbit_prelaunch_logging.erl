@@ -2,11 +2,11 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2019-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2019-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 %% @author The RabbitMQ team
-%% @copyright 2019-2022 VMware, Inc. or its affiliates.
+%% @copyright 2019-2023 VMware, Inc. or its affiliates.
 %%
 %% @doc
 %% This module manages the configuration of the Erlang Logger facility. In
@@ -263,7 +263,7 @@ set_log_level(Level) ->
     ?LOG_DEBUG(
        "Logging: changing primary log level to ~ts", [Level],
        #{domain => ?RMQLOG_DOMAIN_GLOBAL}),
-    logger:set_primary_config(level, Level),
+    _ = logger:set_primary_config(level, Level),
 
     %% Per-module log level.
     lists:foreach(
@@ -318,9 +318,9 @@ set_log_level(Level) ->
               %% If the log level is set to `debug', we turn off burst limit to
               %% make sure all debug messages make it.
               Config1 = adjust_burst_limit(Config, Level),
-              logger:set_handler_config(Id, filters, Filters1),
-              logger:set_handler_config(Id, config, Config1),
-              logger:set_handler_config(Id, level, Level),
+              _ = logger:set_handler_config(Id, filters, Filters1),
+              _ = logger:set_handler_config(Id, config, Config1),
+              _ = logger:set_handler_config(Id, level, Level),
               ok;
           (#{id := Id, config := Config}) ->
               ?LOG_DEBUG(
@@ -330,8 +330,8 @@ set_log_level(Level) ->
               %% If the log level is set to `debug', we turn off burst limit to
               %% make sure all debug messages make it.
               Config1 = adjust_burst_limit(Config, Level),
-              logger:set_handler_config(Id, config, Config1),
-              logger:set_handler_config(Id, level, Level),
+              _ = logger:set_handler_config(Id, config, Config1),
+              _ = logger:set_handler_config(Id, level, Level),
               ok
       end, logger:get_handler_config()),
     ok.
@@ -570,10 +570,10 @@ get_log_app_env() ->
 extract_file_rotation_spec(Defaults) ->
     Spec = lists:filter(fun(Elem) ->
             case Elem of
-                {rotate_on_date, _}     -> true; 
-                {compress_on_rotate, _} -> true; 
-                {max_no_bytes, _}       -> true; 
-                {max_no_files, _}       -> true; 
+                {rotate_on_date, _}     -> true;
+                {compress_on_rotate, _} -> true;
+                {max_no_bytes, _}       -> true;
+                {max_no_files, _}       -> true;
                 _ -> false
             end
         end, Defaults),

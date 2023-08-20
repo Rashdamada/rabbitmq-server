@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2016-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2016-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(unit_SUITE).
@@ -19,6 +19,9 @@
 %% This cipher is listed as supported, but doesn't actually work.
 %% OTP bug: https://bugs.erlang.org/browse/ERL-1478
 -define(SKIPPED_CIPHERS, [aes_ige256]).
+
+%% OTP-26 introduced algorithms that don't play well with the test
+-define(SKIPPED_HASHES, [shake128, shake256]).
 
 all() ->
     [
@@ -37,9 +40,9 @@ groups() ->
             data_coercion_atomize_keys_proplist,
             data_coercion_atomize_keys_map,
             pget,
+            deep_pget,
             encrypt_decrypt,
             encrypt_decrypt_term,
-            version_equivalence,
             pid_decompose_compose,
             platform_and_version,
             frame_encoding_does_not_fail_with_empty_binary_payload,
@@ -328,6 +331,22 @@ pget(_Config) ->
     ?assertEqual(1, rabbit_misc:pget(a, #{a => 1})),
     ?assertEqual(undefined, rabbit_misc:pget(b, #{a => 1})).
 
+deep_pget(_Config) ->
+    ?assertEqual(1, rabbit_misc:deep_pget([p, p], [{p, [{p, 1}]}])),
+    ?assertEqual(1, rabbit_misc:deep_pget([m, p], #{m => [{p, 1}]})),
+    ?assertEqual(1, rabbit_misc:deep_pget([p, m], [{p, #{m => 1}}])),
+    ?assertEqual(1, rabbit_misc:deep_pget([m, m], #{m => #{m => 1}})),
+
+    ?assertEqual(undefined, rabbit_misc:deep_pget([p, x], [{p, [{p, 1}]}])),
+    ?assertEqual(undefined, rabbit_misc:deep_pget([m, x], #{m => [{p, 1}]})),
+    ?assertEqual(undefined, rabbit_misc:deep_pget([p, x], [{p, #{m => 1}}])),
+    ?assertEqual(undefined, rabbit_misc:deep_pget([m, x], #{m => #{m => 1}})),
+
+    ?assertEqual(undefined, rabbit_misc:deep_pget([x, p], [{p, [{p, 1}]}])),
+    ?assertEqual(undefined, rabbit_misc:deep_pget([x, p], #{m => [{p, 1}]})),
+    ?assertEqual(undefined, rabbit_misc:deep_pget([x, m], [{p, #{m => 1}}])),
+    ?assertEqual(undefined, rabbit_misc:deep_pget([x, m], #{m => #{m => 1}})).
+
 pid_decompose_compose(_Config) ->
     Pid = self(),
     {Node, Cre, Id, Ser} = rabbit_misc:decompose_pid(Pid),
@@ -339,7 +358,7 @@ pid_decompose_compose(_Config) ->
 
 encrypt_decrypt(_Config) ->
     %% Take all available block ciphers.
-    Hashes = rabbit_pbe:supported_hashes(),
+    Hashes = rabbit_pbe:supported_hashes() -- ?SKIPPED_HASHES,
     Ciphers = rabbit_pbe:supported_ciphers() -- ?SKIPPED_CIPHERS,
     %% For each cipher, try to encrypt and decrypt data sizes from 0 to 64 bytes
     %% with a random passphrase.
@@ -357,7 +376,7 @@ encrypt_decrypt(_Config) ->
 
 encrypt_decrypt_term(_Config) ->
     %% Take all available block ciphers.
-    Hashes = rabbit_pbe:supported_hashes(),
+    Hashes = rabbit_pbe:supported_hashes() -- ?SKIPPED_HASHES,
     Ciphers = rabbit_pbe:supported_ciphers() -- ?SKIPPED_CIPHERS,
     %% Different Erlang terms to try encrypting.
     DataSet = [
@@ -380,38 +399,6 @@ encrypt_decrypt_term(_Config) ->
              Data = rabbit_pbe:decrypt_term(C, H, Iterations, PassPhrase, Enc)
          end || H <- Hashes, C <- Ciphers, Data <- DataSet],
     ok.
-
-version_equivalence(_Config) ->
-    true = rabbit_misc:version_minor_equivalent("3.0.0", "3.0.0"),
-    true = rabbit_misc:version_minor_equivalent("3.0.0", "3.0.1"),
-    true = rabbit_misc:version_minor_equivalent("%%VSN%%", "%%VSN%%"),
-    true = rabbit_misc:version_minor_equivalent("3.0.0", "3.0"),
-    true = rabbit_misc:version_minor_equivalent("3.0.0", "3.0.0.1"),
-    true = rabbit_misc:version_minor_equivalent("3.0.0.1", "3.0.0.3"),
-    true = rabbit_misc:version_minor_equivalent("3.0.0.1", "3.0.1.3"),
-    true = rabbit_misc:version_minor_equivalent("3.0.0", "3.0.foo"),
-    false = rabbit_misc:version_minor_equivalent("3.0.0", "3.1.0"),
-    false = rabbit_misc:version_minor_equivalent("3.0.0.1", "3.1.0.1"),
-
-    false = rabbit_misc:version_minor_equivalent("3.5.7", "3.6.7"),
-    false = rabbit_misc:version_minor_equivalent("3.6.5", "3.6.6"),
-    false = rabbit_misc:version_minor_equivalent("3.6.6", "3.7.0"),
-    true = rabbit_misc:version_minor_equivalent("3.6.7", "3.6.6"),
-
-    %% Starting with RabbitMQ 3.7.x and feature flags introduced in
-    %% RabbitMQ 3.8.x, versions are considered equivalent and the actual
-    %% check is deferred to the feature flags module.
-    false = rabbit_misc:version_minor_equivalent("3.6.0", "3.8.0"),
-    true = rabbit_misc:version_minor_equivalent("3.7.0", "3.8.0"),
-    true = rabbit_misc:version_minor_equivalent("3.7.0", "3.10.0"),
-
-    true = rabbit_misc:version_minor_equivalent(<<"3.0.0">>, <<"3.0.0">>),
-    true = rabbit_misc:version_minor_equivalent(<<"3.0.0">>, <<"3.0.1">>),
-    true = rabbit_misc:version_minor_equivalent(<<"%%VSN%%">>, <<"%%VSN%%">>),
-    true = rabbit_misc:version_minor_equivalent(<<"3.0.0">>, <<"3.0">>),
-    true = rabbit_misc:version_minor_equivalent(<<"3.0.0">>, <<"3.0.0.1">>),
-    false = rabbit_misc:version_minor_equivalent(<<"3.0.0">>, <<"3.1.0">>),
-    false = rabbit_misc:version_minor_equivalent(<<"3.0.0.1">>, <<"3.1.0.1">>).
 
 frame_encoding_does_not_fail_with_empty_binary_payload(_Config) ->
     [begin

@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(credit_flow).
@@ -88,9 +88,8 @@
         end).
 
 %% If current process was blocked by credit flow in the last
-%% STATE_CHANGE_INTERVAL milliseconds, state/0 will report it as "in
-%% flow".
--define(STATE_CHANGE_INTERVAL, 1000000).
+%% STATE_CHANGE_INTERVAL microseconds, state/0 will report it as "in flow".
+-define(STATE_CHANGE_INTERVAL, 1_000_000).
 
 -ifdef(CREDIT_FLOW_TRACING).
 -define(TRACE_BLOCKED(SELF, FROM), rabbit_event:notify(credit_flow_blocked,

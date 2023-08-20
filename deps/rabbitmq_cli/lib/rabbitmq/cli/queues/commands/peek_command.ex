@@ -2,7 +2,7 @@
 ## License, v. 2.0. If a copy of the MPL was not distributed with this
 ## file, You can obtain one at https://mozilla.org/MPL/2.0/.
 ##
-## Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+## Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 
 defmodule RabbitMQ.CLI.Queues.Commands.PeekCommand do
   alias RabbitMQ.CLI.Core.DocGuide
@@ -27,7 +27,6 @@ defmodule RabbitMQ.CLI.Queues.Commands.PeekCommand do
       case Integer.parse(raw_pos) do
         {n, _} -> n
         :error -> :error
-        _ -> :error
       end
 
     invalid_pos = {:validation_failure, "position value must be a positive integer"}

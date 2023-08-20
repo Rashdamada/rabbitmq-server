@@ -2,7 +2,7 @@
 ## License, v. 2.0. If a copy of the MPL was not distributed with this
 ## file, You can obtain one at https://mozilla.org/MPL/2.0/.
 ##
-## Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+## Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 
 defmodule RabbitMQ.CLI.Ctl.Commands.ForceBootCommand do
   alias RabbitMQ.CLI.Core.{Config, DocGuide}
@@ -24,7 +24,16 @@ defmodule RabbitMQ.CLI.Ctl.Commands.ForceBootCommand do
   end
 
   def run([], %{node: node_name} = opts) do
-    case :rabbit_misc.rpc_call(node_name, :rabbit_mnesia, :force_load_next_boot, []) do
+    ret =
+      case :rabbit_misc.rpc_call(node_name, :rabbit_db, :force_load_on_next_boot, []) do
+        {:badrpc, {:EXIT, {:undef, _}}} ->
+          :rabbit_misc.rpc_call(node_name, :rabbit_mnesia, :force_load_next_boot, [])
+
+        ret0 ->
+          ret0
+      end
+
+    case ret do
       {:badrpc, :nodedown} ->
         case Config.get_option(:data_dir, opts) do
           nil ->

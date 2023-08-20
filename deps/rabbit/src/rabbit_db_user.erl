@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_db_user).
@@ -13,6 +13,7 @@
 
 -export([create/1,
          update/2,
+         get/1,
          get_all/0,
          with_fun_in_mnesia_tx/2,
          get_user_permissions/2,
@@ -26,6 +27,8 @@
          clear_topic_permissions/3,
          clear_matching_topic_permissions/3,
          delete/1]).
+
+-export([clear/0]).
 
 -define(MNESIA_TABLE, rabbit_user).
 -define(PERM_MNESIA_TABLE, rabbit_user_permission).
@@ -50,7 +53,7 @@ create(User) ->
       #{mnesia => fun() -> create_in_mnesia(Username, User) end}).
 
 create_in_mnesia(Username, User) ->
-    rabbit_misc:execute_mnesia_transaction(
+    rabbit_mnesia:execute_mnesia_transaction(
       fun() -> create_in_mnesia_tx(Username, User) end).
 
 create_in_mnesia_tx(Username, User) ->
@@ -77,7 +80,7 @@ update(Username, UpdateFun)
       #{mnesia => fun() -> update_in_mnesia(Username, UpdateFun) end}).
 
 update_in_mnesia(Username, UpdateFun) ->
-    rabbit_misc:execute_mnesia_transaction(
+    rabbit_mnesia:execute_mnesia_transaction(
       fun() -> update_in_mnesia_tx(Username, UpdateFun) end).
 
 update_in_mnesia_tx(Username, UpdateFun) ->
@@ -87,6 +90,31 @@ update_in_mnesia_tx(Username, UpdateFun) ->
             ok = mnesia:write(?MNESIA_TABLE, User1, write);
         [] ->
             mnesia:abort({no_such_user, Username})
+    end.
+
+%% -------------------------------------------------------------------
+%% get().
+%% -------------------------------------------------------------------
+
+-spec get(Username) -> User | undefined when
+      Username :: internal_user:username(),
+      User :: internal_user:internal_user().
+
+%% @doc Returns the record of the internal user named `Username'.
+%%
+%% @returns the internal user record or `undefined' if no internal user is named
+%% `Username'.
+%%
+%% @private
+
+get(Username) when is_binary(Username) ->
+    rabbit_db:run(
+      #{mnesia => fun() -> get_in_mnesia(Username) end}).
+
+get_in_mnesia(Username) ->
+    case ets:lookup(?MNESIA_TABLE, Username) of
+        [User] -> User;
+        []     -> undefined
     end.
 
 %% -------------------------------------------------------------------
@@ -192,26 +220,26 @@ check_and_match_user_permissions(Username, VHostName)
         fun() -> match_user_permissions_in_mnesia(Username, VHostName) end}).
 
 match_user_permissions_in_mnesia('_' = Username, '_' = VHostName) ->
-    rabbit_misc:execute_mnesia_transaction(
+    rabbit_mnesia:execute_mnesia_transaction(
       fun() ->
               match_user_permissions_in_mnesia_tx(Username, VHostName)
       end);
 match_user_permissions_in_mnesia('_' = Username, VHostName) ->
-    rabbit_misc:execute_mnesia_transaction(
+    rabbit_mnesia:execute_mnesia_transaction(
         rabbit_db_vhost:with_fun_in_mnesia_tx(
           VHostName,
           fun() ->
                   match_user_permissions_in_mnesia_tx(Username, VHostName)
           end));
 match_user_permissions_in_mnesia(Username, '_' = VHostName) ->
-    rabbit_misc:execute_mnesia_transaction(
+    rabbit_mnesia:execute_mnesia_transaction(
         with_fun_in_mnesia_tx(
           Username,
           fun() ->
                   match_user_permissions_in_mnesia_tx(Username, VHostName)
           end));
 match_user_permissions_in_mnesia(Username, VHostName) ->
-    rabbit_misc:execute_mnesia_transaction(
+    rabbit_mnesia:execute_mnesia_transaction(
         with_fun_in_mnesia_tx(
           Username,
           rabbit_db_vhost:with_fun_in_mnesia_tx(
@@ -252,7 +280,7 @@ set_user_permissions(
         end}).
 
 set_user_permissions_in_mnesia(Username, VHostName, UserPermission) ->
-    rabbit_misc:execute_mnesia_transaction(
+    rabbit_mnesia:execute_mnesia_transaction(
       with_fun_in_mnesia_tx(
         Username,
         rabbit_db_vhost:with_fun_in_mnesia_tx(
@@ -281,7 +309,7 @@ clear_user_permissions(Username, VHostName)
         fun() -> clear_user_permissions_in_mnesia(Username, VHostName) end}).
 
 clear_user_permissions_in_mnesia(Username, VHostName) ->
-    rabbit_misc:execute_mnesia_transaction(
+    rabbit_mnesia:execute_mnesia_transaction(
       fun() -> clear_user_permissions_in_mnesia_tx(Username, VHostName) end).
 
 clear_user_permissions_in_mnesia_tx(Username, VHostName) ->
@@ -314,7 +342,7 @@ clear_matching_user_permissions(Username, VHostName)
        }).
 
 clear_matching_user_permissions_in_mnesia(Username, VHostName) ->
-    rabbit_misc:execute_mnesia_transaction(
+    rabbit_mnesia:execute_mnesia_transaction(
       fun() ->
               clear_matching_user_permissions_in_mnesia_tx( Username, VHostName)
       end).
@@ -332,7 +360,7 @@ clear_matching_user_permissions_in_mnesia_tx(Username, VHostName) ->
 %% -------------------------------------------------------------------
 
 -spec get_topic_permissions(Username, VHostName, ExchangeName) -> Ret when
-      Username :: internal_topic:topicname(),
+      Username :: rabbit_types:username(),
       VHostName :: vhost:name(),
       ExchangeName :: binary(),
       Ret :: TopicPermission | undefined,
@@ -396,14 +424,14 @@ check_and_match_topic_permissions(Username, VHostName, ExchangeName)
 
 match_topic_permissions_in_mnesia(
   '_' = Username, '_' = VHostName, ExchangeName) ->
-    rabbit_misc:execute_mnesia_transaction(
+    rabbit_mnesia:execute_mnesia_transaction(
       fun() ->
               match_topic_permissions_in_mnesia_tx(
                 Username, VHostName, ExchangeName)
       end);
 match_topic_permissions_in_mnesia(
   '_' = Username, VHostName, ExchangeName) ->
-    rabbit_misc:execute_mnesia_transaction(
+    rabbit_mnesia:execute_mnesia_transaction(
         rabbit_db_vhost:with_fun_in_mnesia_tx(
           VHostName,
           fun() ->
@@ -412,7 +440,7 @@ match_topic_permissions_in_mnesia(
           end));
 match_topic_permissions_in_mnesia(
   Username, '_' = VHostName, ExchangeName) ->
-    rabbit_misc:execute_mnesia_transaction(
+    rabbit_mnesia:execute_mnesia_transaction(
         with_fun_in_mnesia_tx(
           Username,
           fun() ->
@@ -421,7 +449,7 @@ match_topic_permissions_in_mnesia(
           end));
 match_topic_permissions_in_mnesia(
   Username, VHostName, ExchangeName) ->
-    rabbit_misc:execute_mnesia_transaction(
+    rabbit_mnesia:execute_mnesia_transaction(
         with_fun_in_mnesia_tx(
           Username,
           rabbit_db_vhost:with_fun_in_mnesia_tx(
@@ -469,7 +497,7 @@ set_topic_permissions(
         end}).
 
 set_topic_permissions_in_mnesia(Username, VHostName, TopicPermission) ->
-    rabbit_misc:execute_mnesia_transaction(
+    rabbit_mnesia:execute_mnesia_transaction(
       with_fun_in_mnesia_tx(
         Username,
         rabbit_db_vhost:with_fun_in_mnesia_tx(
@@ -505,7 +533,7 @@ clear_topic_permissions(Username, VHostName, ExchangeName)
         end}).
 
 clear_topic_permissions_in_mnesia(Username, VHostName, ExchangeName) ->
-    rabbit_misc:execute_mnesia_transaction(
+    rabbit_mnesia:execute_mnesia_transaction(
       fun() ->
               clear_topic_permissions_in_mnesia_tx(
                 Username, VHostName, ExchangeName)
@@ -520,7 +548,7 @@ clear_topic_permissions_in_mnesia_tx(Username, VHostName, ExchangeName) ->
 
 -spec clear_matching_topic_permissions(Username, VHostName, ExchangeName) ->
     Ret when
-      Username :: internal_topic:topicname() | '_',
+      Username :: rabbit_types:username() | '_',
       VHostName :: vhost:name() | '_',
       ExchangeName :: binary() | '_',
       Ret :: [#topic_permission{}].
@@ -543,7 +571,7 @@ clear_matching_topic_permissions(Username, VHostName, ExchangeName)
 
 clear_matching_topic_permissions_in_mnesia(
   Username, VHostName, ExchangeName) ->
-    rabbit_misc:execute_mnesia_transaction(
+    rabbit_mnesia:execute_mnesia_transaction(
       fun() ->
               clear_matching_topic_permissions_in_mnesia_tx(
                 Username, VHostName, ExchangeName)
@@ -578,7 +606,7 @@ delete(Username) when is_binary(Username) ->
       #{mnesia => fun() -> delete_in_mnesia(Username) end}).
 
 delete_in_mnesia(Username) ->
-    rabbit_misc:execute_mnesia_transaction(
+    rabbit_mnesia:execute_mnesia_transaction(
       fun() -> delete_in_mnesia_tx(Username) end).
 
 delete_in_mnesia_tx(Username) ->
@@ -618,3 +646,22 @@ topic_permission_pattern(Username, VHostName, ExchangeName) ->
                                 virtual_host = VHostName},
                 exchange = ExchangeName},
              permission = '_'}.
+
+%% -------------------------------------------------------------------
+%% clear().
+%% -------------------------------------------------------------------
+
+-spec clear() -> ok.
+%% @doc Deletes all users and permissions.
+%%
+%% @private
+
+clear() ->
+    rabbit_db:run(
+      #{mnesia => fun() -> clear_in_mnesia() end}).
+
+clear_in_mnesia() ->
+    {atomic, ok} = mnesia:clear_table(?MNESIA_TABLE),
+    {atomic, ok} = mnesia:clear_table(?PERM_MNESIA_TABLE),
+    {atomic, ok} = mnesia:clear_table(?TOPIC_PERM_MNESIA_TABLE),
+    ok.

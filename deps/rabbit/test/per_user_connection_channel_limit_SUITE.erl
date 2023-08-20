@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2020-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2020-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(per_user_connection_channel_limit_SUITE).
@@ -110,28 +110,10 @@ end_per_group(_Group, Config) ->
 
 init_per_testcase(Testcase, Config) ->
     rabbit_ct_helpers:testcase_started(Config, Testcase),
-    clear_all_connection_tracking_tables(Config),
-    clear_all_channel_tracking_tables(Config),
     Config.
 
 end_per_testcase(Testcase, Config) ->
-    clear_all_connection_tracking_tables(Config),
-    clear_all_channel_tracking_tables(Config),
     rabbit_ct_helpers:testcase_finished(Config, Testcase).
-
-clear_all_connection_tracking_tables(Config) ->
-    [rabbit_ct_broker_helpers:rpc(Config,
-        N,
-        rabbit_connection_tracking,
-        clear_tracking_tables,
-        []) || N <- rabbit_ct_broker_helpers:get_node_configs(Config, nodename)].
-
-clear_all_channel_tracking_tables(Config) ->
-    [rabbit_ct_broker_helpers:rpc(Config,
-        N,
-        rabbit_channel_tracking,
-        clear_tracking_tables,
-        []) || N <- rabbit_ct_broker_helpers:get_node_configs(Config, nodename)].
 
 %% -------------------------------------------------------------------
 %% Test cases.
@@ -147,7 +129,7 @@ most_basic_single_node_connection_and_channel_count(Config) ->
 
     [Conn] = open_connections(Config, [0]),
     [Chan] = open_channels(Conn, 1),
-    
+
     rabbit_ct_helpers:await_condition(
         fun () ->
             count_connections_of_user(Config, Username) =:= 1 andalso
@@ -469,7 +451,7 @@ cluster_single_user_connection_and_channel_count(Config) ->
             count_connections_of_user(Config, Username) =:= 1 andalso
             count_channels_of_user(Config, Username) =:= 5
         end),
-    
+
     close_connections([Conn1]),
     rabbit_ct_helpers:await_condition(
         fun () ->
@@ -941,7 +923,7 @@ single_node_multiple_users_clear_limits(Config) ->
         end),
     expect_that_client_channel_is_rejected(ConnA),
     expect_that_client_channel_is_rejected(ConnB),
-    
+
     rabbit_ct_helpers:await_condition(
         fun () ->
             is_process_alive(ConnA) =:= false andalso
@@ -1095,13 +1077,13 @@ single_node_multiple_users_zero_limit(Config) ->
         end),
     expect_that_client_channel_is_rejected(ConnA),
     expect_that_client_channel_is_rejected(ConnB),
-    
+
     rabbit_ct_helpers:await_condition(
         fun () ->
             is_process_alive(ConnA) =:= false andalso
             is_process_alive(ConnB) =:= false
         end),
-    
+
     ?assertEqual(false, is_process_alive(ConnA)),
     ?assertEqual(false, is_process_alive(ConnB)),
     rabbit_ct_helpers:await_condition(
@@ -1351,7 +1333,7 @@ cluster_multiple_users_clear_limits(Config) ->
             count_connections_of_user(Config, Username2) =:= 1
         end),
     expect_that_client_channel_is_rejected(ConnA),
-    
+
     rabbit_ct_helpers:await_condition(
         fun () ->
             is_process_alive(ConnA) =:= false andalso
@@ -1433,7 +1415,7 @@ cluster_multiple_users_zero_limit(Config) ->
     set_user_connection_and_channel_limit(Config, Username1, 1, 0),
     set_user_connection_and_channel_limit(Config, Username2, 1, 0),
     [ConnA, ConnB] = open_connections(Config, [{0, Username1}, {1, Username2}]),
-    
+
     expect_that_client_channel_is_rejected(ConnA),
     rabbit_ct_helpers:await_condition(
         fun () ->

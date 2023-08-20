@@ -2,7 +2,7 @@
 ## License, v. 2.0. If a copy of the MPL was not distributed with this
 ## file, You can obtain one at https://mozilla.org/MPL/2.0/.
 ##
-## Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+## Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 
 defmodule RabbitMQ.CLI.Ctl.Commands.ExportDefinitionsCommand do
   alias RabbitMQ.CLI.Core.{DocGuide, ExitCodes, Helpers}
@@ -41,7 +41,7 @@ defmodule RabbitMQ.CLI.Ctl.Commands.ExportDefinitionsCommand do
   def validate([path], _) do
     dir = Path.dirname(path)
 
-    case File.exists?(dir, raw: true) do
+    case File.exists?(dir, [:raw]) do
       true -> :ok
       false -> {:validation_failure, {:bad_argument, "Directory #{dir} does not exist"}}
     end
@@ -76,7 +76,7 @@ defmodule RabbitMQ.CLI.Ctl.Commands.ExportDefinitionsCommand do
         body = serialise(result, format)
         abs_path = Path.absname(path)
 
-        File.rm(abs_path)
+        _ = File.rm(abs_path)
 
         case File.write(abs_path, body) do
           # no output

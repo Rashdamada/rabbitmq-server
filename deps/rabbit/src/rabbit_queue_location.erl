@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_queue_location).
@@ -27,7 +27,8 @@ queue_leader_locators() ->
     {Leader :: node(), Followers :: [node()]}.
 select_leader_and_followers(Q, Size)
   when (?amqqueue_is_quorum(Q) orelse ?amqqueue_is_stream(Q)) andalso is_integer(Size) ->
-    {AllNodes, _DiscNodes, RunningNodes} = rabbit_mnesia:cluster_nodes(status),
+    AllNodes = rabbit_nodes:list_members(),
+    RunningNodes = rabbit_nodes:filter_running(AllNodes),
     true = lists:member(node(), AllNodes),
     QueueType = amqqueue:get_type(Q),
     GetQueues0 = get_queues_for_type(QueueType),
@@ -163,12 +164,7 @@ potential_leaders(Replicas, RunningNodes) ->
 %% Return a function so that queues are fetched lazily (i.e. only when needed,
 %% and at most once when no amqqueue migration is going on).
 get_queues_for_type(QueueType) ->
-    fun() -> rabbit_amqqueue:list_with_possible_retry(
-               fun() ->
-                       mnesia:dirty_match_object(rabbit_queue,
-                                                 amqqueue:pattern_match_on_type(QueueType))
-               end)
-    end.
+    fun () -> rabbit_amqqueue:list_by_type(QueueType) end.
 
 shuffle(L0) when is_list(L0) ->
     L1 = lists:map(fun(E) -> {rand:uniform(), E} end, L0),

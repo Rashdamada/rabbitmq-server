@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_mgmt_wm_definitions).
@@ -129,26 +129,8 @@ accept_multipart(ReqData0, Context) ->
     end.
 
 is_authorized(ReqData, Context) ->
-    case rabbit_mgmt_util:qs_val(<<"auth">>, ReqData) of
-        undefined ->
-            case rabbit_mgmt_util:qs_val(<<"token">>, ReqData) of
-                undefined ->
-                    rabbit_mgmt_util:is_authorized_admin(ReqData, Context);
-                Token ->
-                    rabbit_mgmt_util:is_authorized_admin(ReqData, Context, Token)
-            end;
-        Auth ->
-            is_authorized_qs(ReqData, Context, Auth)
-    end.
+    rabbit_mgmt_util:is_authorized_admin(ReqData, Context).
 
-%% Support for the web UI - it can't add a normal "authorization"
-%% header for a file download.
-is_authorized_qs(ReqData, Context, Auth) ->
-    case rabbit_web_dispatch_util:parse_auth_header("Basic " ++ Auth) of
-        [Username, Password] -> rabbit_mgmt_util:is_authorized_admin(
-                                  ReqData, Context, Username, Password);
-        _                    -> {?AUTH_REALM, ReqData, Context}
-    end.
 
 %%--------------------------------------------------------------------
 
@@ -167,7 +149,7 @@ decode(Body) ->
 accept(Body, ReqData, Context = #context{user = #user{username = Username}}) ->
     %% At this point the request was fully received.
     %% There is no point in the idle_timeout anymore.
-    disable_idle_timeout(ReqData),
+    _ = disable_idle_timeout(ReqData),
     case decode(Body) of
       {error, E} ->
         rabbit_log:error("Encountered an error when parsing definitions: ~tp", [E]),

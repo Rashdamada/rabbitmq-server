@@ -4,7 +4,7 @@
 %%
 %% The Initial Developer of the Original Code is AWeber Communications.
 %% Copyright (c) 2015-2016 AWeber Communications
-%% Copyright (c) 2016-2022 VMware, Inc. or its affiliates. All rights reserved.
+%% Copyright (c) 2016-2023 VMware, Inc. or its affiliates. All rights reserved.
 %%
 
 -module(rabbitmq_peer_discovery_consul_SUITE).
@@ -879,7 +879,7 @@ wait_for_lock_release_with_session_without_token_test(_Config) ->
                         ?assertEqual("localhost", Host),
                         ?assertEqual(8500, Port),
                         ?assertEqual("v1/kv/rabbitmq/default/startup_lock", Path),
-                        ?assertEqual([{index, 42}, {wait, "300s"}], Args),
+                        ?assertEqual([{"index", 42}, {"wait", "300s"}], Args),
                         ?assertEqual([], Headers),
                         ?assertEqual([], HttpOpts),
                         {ok, []}
@@ -894,7 +894,7 @@ wait_for_lock_release_with_session_with_token_test(_Config) ->
                         ?assertEqual("localhost", Host),
                         ?assertEqual(8500, Port),
                         ?assertEqual("v1/kv/rabbitmq/default/startup_lock", Path),
-                        ?assertEqual([{index, 42}, {wait, "300s"}], Args),
+                        ?assertEqual([{"index", 42}, {"wait", "300s"}], Args),
                         ?assertEqual([{"X-Consul-Token", "token-value"}], Headers),
                         ?assertEqual([], HttpOpts),
                         {ok, []}

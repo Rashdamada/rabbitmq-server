@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_json).
@@ -55,12 +55,12 @@ encode(Term, Opts) ->
         end,
     thoas:encode(fixup_terms(Term, F), Opts).
 
--spec try_encode(thoas:json_term()) -> {ok, iodata()} |
+-spec try_encode(thoas:input_term()) -> {ok, iodata()} |
 				     {error, Reason :: term()}.
 try_encode(Term) ->
     try_encode(Term, ?DEFAULT_ENCODE_OPTIONS).
 
--spec try_encode(thoas:json_term(), thoas:decode_options()) ->
+-spec try_encode(thoas:input_term(), thoas:encode_options()) ->
 			{ok, iodata()} | {error, Reason :: term()}.
 try_encode(Term, Opts) ->
     try

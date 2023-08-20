@@ -2,7 +2,7 @@
 ## License, v. 2.0. If a copy of the MPL was not distributed with this
 ## file, You can obtain one at https://mozilla.org/MPL/2.0/.
 ##
-## Copyright (c) 2007-2020 VMware, Inc. or its affiliates.  All rights reserved.
+## Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 
 defmodule SetVhostTagsCommandTest do
   use ExUnit.Case, async: false
@@ -77,7 +77,7 @@ defmodule SetVhostTagsCommandTest do
         fn record -> record[:name] == context[:vhost] end
       )
 
-    assert result[:tags] == context[:tags]
+    assert Enum.sort(result[:tags]) == Enum.sort(context[:tags])
   end
 
   @tag vhost: @vhost, tags: [:qa]

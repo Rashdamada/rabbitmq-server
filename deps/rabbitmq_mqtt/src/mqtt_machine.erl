@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 -module(mqtt_machine).
 -behaviour(ra_machine).
@@ -14,17 +14,17 @@
          init/1,
          apply/3,
          state_enter/2,
-         notify_connection/2]).
+         notify_connection/2,
+         overview/1]).
 
 -type state() :: #machine_state{}.
 
 -type config() :: map().
 
 -type reply() :: {ok, term()} | {error, term()}.
--type client_id() :: term().
 
--type command() :: {register, client_id(), pid()} |
-                   {unregister, client_id(), pid()} |
+-type command() :: {register, client_id_ra(), pid()} |
+                   {unregister, client_id_ra(), pid()} |
                    list.
 version() -> 1.
 
@@ -156,7 +156,7 @@ apply(Meta, {leave, Node}, #machine_state{client_ids = Ids,
                         end, [], Remove),
 
     State = State0#machine_state{client_ids = Keep,
-                                 pids = maps:without(maps:keys(Remove), Pids0)},
+                                 pids = maps:without(maps:values(Remove), Pids0)},
     {State, ok, Effects ++ snapshot_effects(Meta, State)};
 apply(_Meta, {machine_version, 0, 1}, {machine_state, Ids}) ->
     Pids = maps:fold(
@@ -171,6 +171,8 @@ apply(_Meta, Unknown, State) ->
     logger:error("MQTT Raft state machine v1 received unknown command ~tp", [Unknown]),
     {State, {error, {unknown_command, Unknown}}, []}.
 
+-spec state_enter(ra_server:ra_state() | eol, state()) ->
+    ra_machine:effects().
 state_enter(leader, State) ->
     %% re-request monitors for all known pids, this would clean up
     %% records for all connections are no longer around, e.g. right after node restart
@@ -178,9 +180,16 @@ state_enter(leader, State) ->
 state_enter(_, _) ->
     [].
 
+-spec overview(state()) -> map().
+overview(#machine_state{client_ids = ClientIds,
+                        pids = Pids}) ->
+    #{num_client_ids => maps:size(ClientIds),
+      num_pids => maps:size(Pids)}.
+
 %% ==========================
 
 %% Avoids blocking the Raft leader.
+-spec notify_connection(pid(), duplicate_id | decommission_node) -> pid().
 notify_connection(Pid, Reason) ->
   spawn(fun() -> gen_server2:cast(Pid, Reason) end).
 

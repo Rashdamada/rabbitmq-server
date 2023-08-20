@@ -2,7 +2,7 @@
 ## License, v. 2.0. If a copy of the MPL was not distributed with this
 ## file, You can obtain one at https://mozilla.org/MPL/2.0/.
 ##
-## Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+## Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 
 defmodule RabbitMQ.CLI.Core.Helpers do
   alias RabbitMQ.CLI.Core.{Config, DataCoercion, NodeName}
@@ -62,10 +62,24 @@ defmodule RabbitMQ.CLI.Core.Helpers do
   end
 
   def with_nodes_in_cluster(node, fun, timeout \\ :infinity) do
-    case :rpc.call(node, :rabbit_mnesia, :cluster_nodes, [:running], timeout) do
-      {:badrpc, _} = err -> err
-      value -> fun.(value)
+    case :rpc.call(node, :rabbit_nodes, :list_running, [], timeout) do
+      {:badrpc, {:EXIT, {:undef, [{:rabbit_nodes, :list_running, [], []} | _]}}} ->
+        case :rpc.call(node, :rabbit_mnesia, :cluster_nodes, [:running], timeout) do
+          {:badrpc, _} = err -> err
+          value -> fun.(value)
+        end
+
+      {:badrpc, _} = err ->
+        err
+
+      value ->
+        fun.(value)
     end
+  end
+
+  def cluster_member?(target_node, node_to_check, timeout \\ 30_000) do
+    node_to_check_a = DataCoercion.to_atom(node_to_check)
+    Enum.member?(nodes_in_cluster(target_node, timeout), node_to_check_a)
   end
 
   def node_running?(node) do
@@ -130,7 +144,7 @@ defmodule RabbitMQ.CLI.Core.Helpers do
   end
 
   def apply_if_exported(mod, fun, args, default) do
-    Code.ensure_loaded(mod)
+    _ = Code.ensure_loaded(mod)
 
     case function_exported?(mod, fun, length(args)) do
       true -> apply(mod, fun, args)

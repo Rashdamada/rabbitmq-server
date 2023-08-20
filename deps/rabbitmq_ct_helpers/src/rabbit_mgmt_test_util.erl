@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%%   Copyright (c) 2010-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%%   Copyright (c) 2010-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_mgmt_test_util).
@@ -165,7 +165,7 @@ http_delete(Config, Path, CodeExp, Body) ->
 
 http_delete(Config, Path, User, Pass, CodeExp, Body) ->
     {ok, {{_HTTP, CodeAct, _}, Headers, ResBody}} =
-        req(Config, 0, delete, Path, [auth_header(User, Pass)], Body),
+        req(Config, 0, delete, Path, [auth_header(User, Pass)], format_for_upload(Body)),
     assert_code(CodeExp, CodeAct, "DELETE", Path, ResBody),
     decode(CodeExp, Headers, ResBody).
 

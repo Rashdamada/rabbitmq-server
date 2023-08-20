@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_auth_backend_internal).
@@ -17,7 +17,7 @@
 -export([add_user/3, add_user/4, add_user/5, delete_user/2, lookup_user/1, exists/1,
          change_password/3, clear_password/2,
          hash_password/2, change_password_hash/2, change_password_hash/3,
-         set_tags/3, set_permissions/6, clear_permissions/3, clear_permissions_for_vhost/2,
+         set_tags/3, set_permissions/6, clear_permissions/3, clear_permissions_for_vhost/2, set_permissions_globally/5,
          set_topic_permissions/6, clear_topic_permissions/3, clear_topic_permissions/4, clear_topic_permissions_for_vhost/2,
          add_user_sans_validation/3, put_user/2, put_user/3,
          update_user/5,
@@ -69,7 +69,7 @@ hashing_module_for_user(User) ->
 %% possible when the EXTERNAL authentication mechanism is used, see
 %% rabbit_auth_mechanism_plain:handle_response/2 and rabbit_reader:auth_phase/2.
 user_login_authentication(Username, []) ->
-    internal_check_user_login(Username, fun(_) -> true end);
+    user_login_authentication(Username, [{password, none}]);
 %% For cases when we do have a set of credentials. rabbit_auth_mechanism_plain:handle_response/2
 %% performs initial validation.
 user_login_authentication(Username, AuthProps) ->
@@ -80,6 +80,8 @@ user_login_authentication(Username, AuthProps) ->
         {password, ""} ->
             {refused, ?BLANK_PASSWORD_REJECTION_MESSAGE,
              [Username]};
+        {password, none} -> %% For cases when authenticating using an x.509 certificate
+            internal_check_user_login(Username, fun(_) -> true end);
         {password, Cleartext} ->
             internal_check_user_login(
               Username,
@@ -92,7 +94,11 @@ user_login_authentication(Username, AuthProps) ->
                           false
                   end
               end);
-        false -> exit({unknown_auth_props, Username, AuthProps})
+        false ->
+            case proplists:get_value(rabbit_auth_backend_internal, AuthProps, undefined) of
+                undefined -> {refused, ?BLANK_PASSWORD_REJECTION_MESSAGE, [Username]};
+                _ -> internal_check_user_login(Username, fun(_) -> true end)
+            end
     end.
 
 state_can_expire() -> false.
@@ -189,7 +195,7 @@ validate_and_alternate_credentials(Username, Password, ActingUser, Fun) ->
         ok           ->
             Fun(Username, Password, ActingUser);
         {error, Err} ->
-            rabbit_log:error("Credential validation for '~ts' failed!", [Username]),
+            rabbit_log:error("Credential validation for user '~ts' failed!", [Username]),
             {error, Err}
     end.
 
@@ -300,7 +306,10 @@ delete_user(Username, ActingUser) ->
             rabbit_types:error('not_found').
 
 lookup_user(Username) ->
-    rabbit_misc:dirty_read({rabbit_user, Username}).
+    case rabbit_db_user:get(Username) of
+        undefined -> {error, not_found};
+        User      -> {ok, User}
+    end.
 
 -spec exists(rabbit_types:username()) -> boolean().
 
@@ -378,7 +387,7 @@ update_user_sans_validation(Tags, Limits) ->
 -spec clear_password(rabbit_types:username(), rabbit_types:username()) -> 'ok'.
 
 clear_password(Username, ActingUser) ->
-    rabbit_log:info("Clearing password for '~ts'", [Username]),
+    rabbit_log:info("Clearing password for user '~ts'", [Username]),
     R = change_password_hash(Username, <<"">>),
     rabbit_event:notify(user_password_cleared,
                         [{name, Username},
@@ -447,16 +456,16 @@ notify_user_tags_set(Username, ConvertedTags, ActingUser) ->
             'ok'.
 
 set_permissions(Username, VirtualHost, ConfigurePerm, WritePerm, ReadPerm, ActingUser) ->
-    rabbit_log:debug("Asked to set permissions for "
+    rabbit_log:debug("Asked to set permissions for user "
                      "'~ts' in virtual host '~ts' to '~ts', '~ts', '~ts'",
                      [Username, VirtualHost, ConfigurePerm, WritePerm, ReadPerm]),
-    lists:map(
+    _ = lists:map(
       fun (RegexpBin) ->
               Regexp = binary_to_list(RegexpBin),
               case re:compile(Regexp) of
                   {ok, _}         -> ok;
                   {error, Reason} ->
-                      rabbit_log:warning("Failed to set permissions for '~ts' in virtual host '~ts': "
+                      rabbit_log:warning("Failed to set permissions for user '~ts' in virtual host '~ts': "
                                          "regular expression '~ts' is invalid",
                                          [Username, VirtualHost, RegexpBin]),
                       throw({error, {invalid_regexp, Regexp, Reason}})
@@ -472,7 +481,7 @@ set_permissions(Username, VirtualHost, ConfigurePerm, WritePerm, ReadPerm, Actin
                                             write      = WritePerm,
                                             read       = ReadPerm}},
         R = rabbit_db_user:set_user_permissions(UserPermission),
-        rabbit_log:info("Successfully set permissions for "
+        rabbit_log:info("Successfully set permissions for user "
                         "'~ts' in virtual host '~ts' to '~ts', '~ts', '~ts'",
                         [Username, VirtualHost, ConfigurePerm, WritePerm, ReadPerm]),
         rabbit_event:notify(permission_created, [{user,      Username},
@@ -484,15 +493,15 @@ set_permissions(Username, VirtualHost, ConfigurePerm, WritePerm, ReadPerm, Actin
         R
     catch
         throw:{error, {no_such_vhost, _}} = Error ->
-            rabbit_log:warning("Failed to set permissions for '~ts': virtual host '~ts' does not exist",
+            rabbit_log:warning("Failed to set permissions for user '~ts': virtual host '~ts' does not exist",
                                [Username, VirtualHost]),
             throw(Error);
         throw:{error, {no_such_user, _}} = Error ->
-            rabbit_log:warning("Failed to set permissions for '~ts': the user does not exist",
+            rabbit_log:warning("Failed to set permissions for user '~ts': the user does not exist",
                                [Username]),
             throw(Error);
         Class:Error:Stacktrace ->
-            rabbit_log:warning("Failed to set permissions for '~ts' in virtual host '~ts': ~tp",
+            rabbit_log:warning("Failed to set permissions for user '~ts' in virtual host '~ts': ~tp",
                                [Username, VirtualHost, Error]),
             erlang:raise(Class, Error, Stacktrace)
     end.
@@ -501,27 +510,19 @@ set_permissions(Username, VirtualHost, ConfigurePerm, WritePerm, ReadPerm, Actin
         (rabbit_types:username(), rabbit_types:vhost(), rabbit_types:username()) -> 'ok'.
 
 clear_permissions(Username, VirtualHost, ActingUser) ->
-    rabbit_log:debug("Asked to clear permissions for '~ts' in virtual host '~ts'",
+    rabbit_log:debug("Asked to clear permissions for user '~ts' in virtual host '~ts'",
                      [Username, VirtualHost]),
     try
         R = rabbit_db_user:clear_user_permissions(Username, VirtualHost),
-        rabbit_log:info("Successfully cleared permissions for '~ts' in virtual host '~ts'",
+        rabbit_log:info("Successfully cleared permissions for user '~ts' in virtual host '~ts'",
                         [Username, VirtualHost]),
         rabbit_event:notify(permission_deleted, [{user,  Username},
                                                  {vhost, VirtualHost},
                                                  {user_who_performed_action, ActingUser}]),
         R
     catch
-        throw:{error, {no_such_vhost, _}} = Error ->
-            rabbit_log:warning("Failed to clear permissions for '~ts': virtual host '~ts' does not exist",
-                               [Username, VirtualHost]),
-            throw(Error);
-        throw:{error, {no_such_user, _}} = Error ->
-            rabbit_log:warning("Failed to clear permissions for '~ts': the user does not exist",
-                               [Username]),
-            throw(Error);
         Class:Error:Stacktrace ->
-            rabbit_log:warning("Failed to clear permissions for '~ts' in virtual host '~ts': ~tp",
+            rabbit_log:warning("Failed to clear permissions for user '~ts' in virtual host '~ts': ~tp",
                                [Username, VirtualHost, Error]),
             erlang:raise(Class, Error, Stacktrace)
     end.
@@ -529,23 +530,28 @@ clear_permissions(Username, VirtualHost, ActingUser) ->
 clear_permissions_for_vhost(VirtualHost, _ActingUser) ->
     rabbit_db_user:clear_matching_user_permissions('_', VirtualHost).
 
+set_permissions_globally(Username, ConfigurePerm, WritePerm, ReadPerm, ActingUser) ->
+    VirtualHosts = rabbit_vhost:list_names(),
+    [set_permissions(Username, VH, ConfigurePerm, WritePerm, ReadPerm, ActingUser) || VH <- VirtualHosts],
+    ok.
+
 set_topic_permissions(Username, VirtualHost, Exchange, WritePerm, ReadPerm, ActingUser) ->
     rabbit_log:debug("Asked to set topic permissions on exchange '~ts' for "
                      "user '~ts' in virtual host '~ts' to '~ts', '~ts'",
                      [Exchange, Username, VirtualHost, WritePerm, ReadPerm]),
     WritePermRegex = rabbit_data_coercion:to_binary(WritePerm),
     ReadPermRegex = rabbit_data_coercion:to_binary(ReadPerm),
-    lists:map(
-        fun (RegexpBin) ->
-            case re:compile(RegexpBin) of
-                {ok, _}         -> ok;
-                {error, Reason} ->
-                    rabbit_log:warning("Failed to set topic permissions on exchange '~ts' for "
-                                       "'~ts' in virtual host '~ts': regular expression '~ts' is invalid",
-                                       [Exchange, Username, VirtualHost, RegexpBin]),
-                    throw({error, {invalid_regexp, RegexpBin, Reason}})
-            end
-        end, [WritePerm, ReadPerm]),
+    lists:foreach(
+      fun (RegexpBin) ->
+              case re:compile(RegexpBin) of
+                  {ok, _}         -> ok;
+                  {error, Reason} ->
+                      rabbit_log:warning("Failed to set topic permissions on exchange '~ts' for user "
+                                         "'~ts' in virtual host '~ts': regular expression '~ts' is invalid",
+                                         [Exchange, Username, VirtualHost, RegexpBin]),
+                      throw({error, {invalid_regexp, RegexpBin, Reason}})
+              end
+      end, [WritePerm, ReadPerm]),
     try
         TopicPermission = #topic_permission{
                              topic_permission_key = #topic_permission_key{
@@ -561,7 +567,7 @@ set_topic_permissions(Username, VirtualHost, Exchange, WritePerm, ReadPerm, Acti
                             },
         R = rabbit_db_user:set_topic_permissions(TopicPermission),
         rabbit_log:info("Successfully set topic permissions on exchange '~ts' for "
-                         "'~ts' in virtual host '~ts' to '~ts', '~ts'",
+                         "user '~ts' in virtual host '~ts' to '~ts', '~ts'",
                          [Exchange, Username, VirtualHost, WritePerm, ReadPerm]),
         rabbit_event:notify(topic_permission_created, [
             {user,      Username},
@@ -573,25 +579,25 @@ set_topic_permissions(Username, VirtualHost, Exchange, WritePerm, ReadPerm, Acti
         R
     catch
         throw:{error, {no_such_vhost, _}} = Error ->
-            rabbit_log:warning("Failed to set topic permissions on exchange '~ts' for '~ts': virtual host '~ts' does not exist.",
+            rabbit_log:warning("Failed to set topic permissions on exchange '~ts' for user '~ts': virtual host '~ts' does not exist.",
                                [Exchange, Username, VirtualHost]),
             throw(Error);
         throw:{error, {no_such_user, _}} = Error ->
-            rabbit_log:warning("Failed to set topic permissions on exchange '~ts' for '~ts': the user does not exist.",
+            rabbit_log:warning("Failed to set topic permissions on exchange '~ts' for user '~ts': the user does not exist.",
                                [Exchange, Username]),
             throw(Error);
         Class:Error:Stacktrace ->
-            rabbit_log:warning("Failed to set topic permissions on exchange '~ts' for '~ts' in virtual host '~ts': ~tp.",
+            rabbit_log:warning("Failed to set topic permissions on exchange '~ts' for user '~ts' in virtual host '~ts': ~tp.",
                                [Exchange, Username, VirtualHost, Error]),
             erlang:raise(Class, Error, Stacktrace)
     end .
 
 clear_topic_permissions(Username, VirtualHost, ActingUser) ->
-    rabbit_log:debug("Asked to clear topic permissions for '~ts' in virtual host '~ts'",
+    rabbit_log:debug("Asked to clear topic permissions for user '~ts' in virtual host '~ts'",
                      [Username, VirtualHost]),
     try
         R = rabbit_db_user:clear_topic_permissions(Username, VirtualHost, '_'),
-        rabbit_log:info("Successfully cleared topic permissions for '~ts' in virtual host '~ts'",
+        rabbit_log:info("Successfully cleared topic permissions for user '~ts' in virtual host '~ts'",
                         [Username, VirtualHost]),
         rabbit_event:notify(topic_permission_deleted, [{user,  Username},
             {vhost, VirtualHost},
@@ -599,18 +605,18 @@ clear_topic_permissions(Username, VirtualHost, ActingUser) ->
         R
     catch
         Class:Error:Stacktrace ->
-            rabbit_log:warning("Failed to clear topic permissions for '~ts' in virtual host '~ts': ~tp",
+            rabbit_log:warning("Failed to clear topic permissions for user '~ts' in virtual host '~ts': ~tp",
                                [Username, VirtualHost, Error]),
             erlang:raise(Class, Error, Stacktrace)
     end.
 
 clear_topic_permissions(Username, VirtualHost, Exchange, ActingUser) ->
-    rabbit_log:debug("Asked to clear topic permissions on exchange '~ts' for '~ts' in virtual host '~ts'",
+    rabbit_log:debug("Asked to clear topic permissions on exchange '~ts' for user '~ts' in virtual host '~ts'",
                      [Exchange, Username, VirtualHost]),
     try
         R = rabbit_db_user:clear_topic_permissions(
               Username, VirtualHost, Exchange),
-        rabbit_log:info("Successfully cleared topic permissions on exchange '~ts' for '~ts' in virtual host '~ts'",
+        rabbit_log:info("Successfully cleared topic permissions on exchange '~ts' for user '~ts' in virtual host '~ts'",
                         [Exchange, Username, VirtualHost]),
         rabbit_event:notify(permission_deleted, [{user,  Username},
                                                  {vhost, VirtualHost},
@@ -618,7 +624,7 @@ clear_topic_permissions(Username, VirtualHost, Exchange, ActingUser) ->
         R
     catch
         Class:Error:Stacktrace ->
-            rabbit_log:warning("Failed to clear topic permissions on exchange '~ts' for '~ts' in virtual host '~ts': ~tp",
+            rabbit_log:warning("Failed to clear topic permissions on exchange '~ts' for user '~ts' in virtual host '~ts': ~tp",
                                [Exchange, Username, VirtualHost, Error]),
             erlang:raise(Class, Error, Stacktrace)
     end.
@@ -717,9 +723,9 @@ update_user_password_hash(Username, PasswordHash, Tags, Limits, User, Version) -
       Username, Hash, HashingAlgorithm, ConvertedTags, Limits).
 
 create_user_with_password(_PassedCredentialValidation = true,  Username, Password, Tags, undefined, Limits, ActingUser) ->
-    rabbit_auth_backend_internal:add_user(Username, Password, ActingUser, Limits, Tags);
+    ok = rabbit_auth_backend_internal:add_user(Username, Password, ActingUser, Limits, Tags);
 create_user_with_password(_PassedCredentialValidation = true,  Username, Password, Tags, PreconfiguredPermissions, Limits, ActingUser) ->
-    rabbit_auth_backend_internal:add_user(Username, Password, ActingUser, Limits, Tags),
+    ok = rabbit_auth_backend_internal:add_user(Username, Password, ActingUser, Limits, Tags),
     preconfigure_permissions(Username, PreconfiguredPermissions, ActingUser);
 create_user_with_password(_PassedCredentialValidation = false, _Username, _Password, _Tags, _, _, _) ->
     %% we don't log here because
@@ -738,7 +744,7 @@ create_user_with_password_hash(Username, PasswordHash, Tags, User, Version, Prec
 preconfigure_permissions(_Username, undefined, _ActingUser) ->
     ok;
 preconfigure_permissions(Username, Map, ActingUser) when is_map(Map) ->
-    maps:map(fun(VHost, M) ->
+    _ = maps:map(fun(VHost, M) ->
                      rabbit_auth_backend_internal:set_permissions(Username, VHost,
                                                   maps:get(<<"configure">>, M),
                                                   maps:get(<<"write">>,     M),

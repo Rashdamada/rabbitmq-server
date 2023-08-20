@@ -8,21 +8,21 @@ jobs:
     strategy:
       matrix:
         include:
-        - image_tag_suffix: otp-max
-          erlang_version: "25"
+          - image_tag_suffix: otp-max-bazel
+            otp_version_id: 26
     timeout-minutes: 45
     steps:
     - name: CHECKOUT REPOSITORY
       uses: actions/checkout@v3
     - name: WAIT FOR OCI IMAGE WORKFLOW
-      uses: lewagon/wait-on-check-action@v1.2.0
+      uses: lewagon/wait-on-check-action@v1.3.1
       with:
         ref: ${{ github.ref }}
-        check-name: build-publish-dev (${{ matrix.image_tag_suffix }})
+        check-name: build-publish-dev-bazel (${{ matrix.image_tag_suffix }}, ${{ matrix.otp_version_id }})
         repo-token: ${{ secrets.GITHUB_TOKEN }}
         wait-interval: 30 # seconds
     - name: MOUNT BAZEL CACHE
-      uses: actions/cache@v3.0.11
+      uses: actions/cache@v3.3.1
       with:
         path: "/home/runner/repo-cache/"
         key: repo-cache
@@ -46,11 +46,11 @@ jobs:
 
         branch_or_tag="${GITHUB_REF##*/}"
         bazelisk test //deps/rabbitmq_peer_discovery_aws:integration_SUITE \
-          --config=rbe-${{ matrix.erlang_version }} \
+          --config=rbe-${{ matrix.otp_version_id }} \
           --test_tag_filters=aws \
           --build_tests_only \
           --test_env AWS_ACCESS_KEY_ID=${{ secrets.CONCOURSE_AWS_ACCESS_KEY_ID }} \
           --test_env AWS_SECRET_ACCESS_KEY=${{ secrets.CONCOURSE_AWS_SECRET_ACCESS_KEY }} \
-          --test_env RABBITMQ_IMAGE="pivotalrabbitmq/rabbitmq:${{ github.sha }}-otp-max" \
+          --test_env RABBITMQ_IMAGE="pivotalrabbitmq/rabbitmq:${{ github.sha }}-otp-max-bazel" \
           --test_env AWS_ECS_CLUSTER_NAME="rabbitmq-peer-discovery-aws-actions-${branch_or_tag//./-}" \
           --verbose_failures

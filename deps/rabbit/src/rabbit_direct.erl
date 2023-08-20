@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_direct).
@@ -33,7 +33,7 @@ boot() -> rabbit_sup:start_supervisor_child(
 -spec force_event_refresh(reference()) -> 'ok'.
 
 force_event_refresh(Ref) ->
-    [Pid ! {force_event_refresh, Ref} || Pid <- list()],
+    _ = [Pid ! {force_event_refresh, Ref} || Pid <- list()],
     ok.
 
 -spec list_local() -> [pid()].
@@ -44,7 +44,7 @@ list_local() ->
 -spec list() -> [pid()].
 
 list() ->
-    Nodes = rabbit_nodes:all_running(),
+    Nodes = rabbit_nodes:list_running(),
     rabbit_misc:append_rpc_all_nodes(Nodes, rabbit_direct, list_local, [], ?RPC_TIMEOUT).
 
 %%----------------------------------------------------------------------------
@@ -52,8 +52,8 @@ list() ->
 auth_fun({none, _}, _VHost, _ExtraAuthProps) ->
     fun () -> {ok, rabbit_auth_backend_dummy:user()} end;
 
-auth_fun({Username, none}, _VHost, _ExtraAuthProps) ->
-    fun () -> rabbit_access_control:check_user_login(Username, []) end;
+auth_fun({Username, none}, _VHost, ExtraAuthProps) ->
+    fun () -> rabbit_access_control:check_user_login(Username, [] ++ ExtraAuthProps) end;
 
 auth_fun({Username, Password}, VHost, ExtraAuthProps) ->
     fun () ->
@@ -72,8 +72,19 @@ auth_fun({Username, Password}, VHost, ExtraAuthProps) ->
               'broker_not_found_on_node' |
               {'auth_failure', string()} | 'access_refused').
 
+%% Infos is a PropList which contains the content of the Proplist #amqp_adapter_info.additional_info
+%% among other credentials such as protocol, ssl information, etc.
+%% #amqp_adapter_info.additional_info may carry a credential called `authz_bakends` which has the
+%% content of the #user.authz_backends attribute. This means that we are propagating the outcome
+%% from the first successful authentication for the current user when opening an internal
+%% amqp connection. This is particularly relevant for protocol plugins such as AMQP 1.0 where
+%% users are authenticated in one context and later on an internal amqp connection is opened
+%% on a different context. In other words, we do not have anymore the initial credentials presented
+%% during the first authentication. However, we do have the outcome from such successful authentication.
+
 connect(Creds, VHost, Protocol, Pid, Infos) ->
-    ExtraAuthProps = extract_extra_auth_props(Creds, VHost, Pid, Infos),
+    ExtraAuthProps = append_authz_backends(extract_extra_auth_props(Creds, VHost, Pid, Infos), Infos),
+
     AuthFun = auth_fun(Creds, VHost, ExtraAuthProps),
     case rabbit_boot_state:has_reached_and_is_active(core_started) of
         true  ->
@@ -112,6 +123,13 @@ extract_extra_auth_props(Creds, VHost, Pid, Infos) ->
             [];
         Protocol ->
             maybe_call_connection_info_module(Protocol, Creds, VHost, Pid, Infos)
+    end.
+
+
+append_authz_backends(AuthProps, Infos) ->
+    case proplists:get_value(authz_backends, Infos, undefined) of
+        undefined -> AuthProps;
+        AuthzBackends -> AuthProps ++ AuthzBackends
     end.
 
 extract_protocol(Infos) ->

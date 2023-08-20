@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 %% There are two types of alarms handled by this module:
 %%
@@ -29,6 +29,9 @@
 
 -export([remote_conserve_resources/3]). %% Internal use only
 
+-export_type([resource_alarm_source/0,
+              resource_alert/0]).
+
 -define(SERVER, ?MODULE).
 
 -define(FILE_DESCRIPTOR_RESOURCE, <<"file descriptors">>).
@@ -41,10 +44,14 @@
                  alarmed_nodes :: dict:dict(node(), [resource_alarm_source()]),
                  alarms :: [alarm()]}).
 
+-export_type([alarm/0]).
 -type local_alarm() :: 'file_descriptor_limit'.
 -type resource_alarm_source() :: 'disk' | 'memory'.
 -type resource_alarm() :: {resource_limit, resource_alarm_source(), node()}.
 -type alarm() :: local_alarm() | resource_alarm().
+-type resource_alert() :: {WasAlarmSetForNode :: boolean(),
+                           IsThereAnyAlarmsWithSameSourceInTheCluster :: boolean(),
+                           NodeForWhichAlarmWasSetOrCleared :: node()}.
 
 %%----------------------------------------------------------------------------
 
@@ -100,13 +107,13 @@ get_alarms() -> gen_event:call(?SERVER, ?MODULE, get_alarms, infinity).
 -spec get_alarms(timeout()) -> [{alarm(), []}].
 get_alarms(Timeout) -> gen_event:call(?SERVER, ?MODULE, get_alarms, Timeout).
 
--spec get_local_alarms() -> [alarm()].
+-spec get_local_alarms() -> [{alarm(), []}].
 get_local_alarms() -> gen_event:call(?SERVER, ?MODULE, get_local_alarms, infinity).
 
--spec get_local_alarms(timeout()) -> [alarm()].
+-spec get_local_alarms(timeout()) -> [{alarm(), []}].
 get_local_alarms(Timeout) -> gen_event:call(?SERVER, ?MODULE, get_local_alarms, Timeout).
 
--spec filter_local_alarms([alarm()]) -> [alarm()].
+-spec filter_local_alarms([{alarm(), any()}]) -> [{alarm(), any()}].
 filter_local_alarms(Alarms) ->
     lists:filter(fun is_local/1, Alarms).
 
@@ -312,7 +319,7 @@ alert(Alertees, Source, Alert, NodeComparator) ->
 internal_register(Pid, {M, F, A} = AlertMFA,
                   State = #alarms{alertees = Alertees}) ->
     _MRef = erlang:monitor(process, Pid),
-    case dict:find(node(), State#alarms.alarmed_nodes) of
+    _ = case dict:find(node(), State#alarms.alarmed_nodes) of
         {ok, Sources} -> [apply(M, F, A ++ [Pid, R, {true, true, node()}]) || R <- Sources];
         error          -> ok
     end,

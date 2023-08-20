@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_federation_exchange_link).
@@ -49,7 +49,7 @@
 %% and the Erlang client is not running. This then gets invoked when
 %% the federation app is started.
 go() ->
-    rabbit_federation_pg:start_scope(),
+    _ = rabbit_federation_pg:start_scope(),
     cast(go).
 
 add_binding(S, XN, B)      -> cast(XN, {enqueue, S, {add_binding, B}}).
@@ -198,7 +198,7 @@ terminate(Reason, #state{downstream_connection = DConn,
                          queue                 = Queue}) when Reason =:= shutdown;
                                                               Reason =:= {shutdown, restart};
                                                               Reason =:= gone ->
-    timer:cancel(TRef),
+    _ = timer:cancel(TRef),
     rabbit_federation_link_util:ensure_connection_closed(DConn),
 
     rabbit_log:debug("Exchange federation: link is shutting down, resource cleanup mode: ~tp", [Upstream#upstream.resource_cleanup_mode]),
@@ -222,7 +222,7 @@ terminate(Reason, #state{downstream_connection = DConn,
                          upstream_params       = UParams,
                          downstream_exchange   = XName,
                          internal_exchange_timer = TRef}) ->
-    timer:cancel(TRef),
+    _ = timer:cancel(TRef),
 
     rabbit_federation_link_util:ensure_connection_closed(DConn),
 
@@ -438,12 +438,8 @@ go(S0 = {not_started, {Upstream, UParams, DownXName}}) ->
                           {longstr, N} -> N;
                           _            -> unknown
                       end,
-              {Serial, Bindings} =
-                  rabbit_misc:execute_mnesia_transaction(
-                    fun () ->
-                            {rabbit_exchange:peek_serial(DownXName),
-                             rabbit_binding:list_for_source(DownXName)}
-                    end),
+              {Serial, Bindings} = {rabbit_exchange:peek_serial(DownXName),
+                                    rabbit_binding:list_for_source(DownXName)},
               true = is_integer(Serial),
               %% If we are very short lived, Serial can be undefined at
               %% this point (since the deletion of the X could have
@@ -495,8 +491,8 @@ open_command_channel(Conn, Upstream = #upstream{name = UName}, UParams, DownXNam
             {ok, CCh};
         E ->
             rabbit_federation_link_util:ensure_connection_closed(Conn),
-            rabbit_federation_link_util:connection_error(command_channel, E,
-                                                         Upstream, UParams, DownXName, S0),
+            _ = rabbit_federation_link_util:connection_error(command_channel, E,
+                                                             Upstream, UParams, DownXName, S0),
             E
     end.
 

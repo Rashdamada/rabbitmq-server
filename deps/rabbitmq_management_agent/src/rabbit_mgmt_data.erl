@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2016-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2016-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_mgmt_data).
@@ -252,7 +252,31 @@ augment_consumer({{Q, Ch, CTag}, Props}) ->
     [{queue, format_resource(Q)},
      {channel_details, augment_channel_pid(Ch)},
      {channel_pid, Ch},
-     {consumer_tag, CTag} | Props].
+     {consumer_tag, CTag},
+     {consumer_timeout, consumer_timeout(Props, Q)} | Props].
+
+consumer_timeout(_Props, Q) ->
+    get_queue_consumer_timeout(Q, get_global_consumer_timeout()).
+
+get_queue_consumer_timeout(QName, GCT) ->
+    case rabbit_amqqueue:lookup(QName) of
+	{ok, Q} -> %% should we account for different queue states here?
+	    case rabbit_queue_type_util:args_policy_lookup(<<"consumer-timeout">>,
+							   fun (X, Y) -> erlang:min(X, Y) end, Q) of
+		    undefined -> GCT;
+		    Val -> Val
+	    end;
+	_ ->
+	    GCT
+    end.
+
+get_global_consumer_timeout() ->
+    case application:get_env(rabbit, consumer_timeout) of
+        {ok, MS} when is_integer(MS) ->
+            MS;
+        _ ->
+            undefined
+    end.
 
 consumers_by_vhost(VHost) ->
     ets:select(consumer_stats,
@@ -356,8 +380,7 @@ lookup_smaller_sample(Table, Id) ->
         [] ->
             not_found;
         [{_, Slide}] ->
-            Slide1 = exometer_slide:optimize(Slide),
-            maybe_convert_for_compatibility(Table, Slide1)
+            exometer_slide:optimize(Slide)
     end.
 
 -spec lookup_samples(atom(), any(), #range{}) -> maybe_slide().
@@ -366,8 +389,7 @@ lookup_samples(Table, Id, Range) ->
         [] ->
             not_found;
         [{_, Slide}] ->
-            Slide1 = exometer_slide:optimize(Slide),
-            maybe_convert_for_compatibility(Table, Slide1)
+            exometer_slide:optimize(Slide)
     end.
 
 lookup_all(Table, Ids, SecondKey) ->
@@ -383,38 +405,8 @@ lookup_all(Table, Ids, SecondKey) ->
         [] ->
             not_found;
         _ ->
-            Slide = exometer_slide:sum(Slides, empty(Table, 0)),
-            maybe_convert_for_compatibility(Table, Slide)
+            exometer_slide:sum(Slides, empty(Table, 0))
     end.
-
-maybe_convert_for_compatibility(Table, Slide)
-  when Table =:= channel_stats_fine_stats orelse
-       Table =:= channel_exchange_stats_fine_stats orelse
-       Table =:= vhost_stats_fine_stats ->
-     ConversionNeeded = rabbit_feature_flags:is_disabled(
-                          drop_unroutable_metric),
-     case ConversionNeeded of
-         false ->
-             Slide;
-         true ->
-             %% drop_drop because the metric is named "drop_unroutable"
-             rabbit_mgmt_data_compat:drop_drop_unroutable_metric(Slide)
-     end;
-maybe_convert_for_compatibility(Table, Slide)
-  when Table =:= channel_queue_stats_deliver_stats orelse
-       Table =:= channel_stats_deliver_stats orelse
-       Table =:= queue_stats_deliver_stats orelse
-       Table =:= vhost_stats_deliver_stats ->
-    ConversionNeeded = rabbit_feature_flags:is_disabled(
-                         empty_basic_get_metric),
-    case ConversionNeeded of
-        false ->
-            Slide;
-        true ->
-            rabbit_mgmt_data_compat:drop_get_empty_queue_metric(Slide)
-    end;
-maybe_convert_for_compatibility(_, Slide) ->
-    Slide.
 
 get_table_keys(Table, Id0) ->
     ets:select(Table, match_spec_keys(Id0)).

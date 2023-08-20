@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 -module(prometheus_rabbitmq_core_metrics_collector).
 -export([register/0,
@@ -117,15 +117,15 @@
     ]},
 
     {auth_attempt_metrics, [
-        {2, undefined, auth_attempts_total, counter, "Total number of authorization attempts"},
+        {2, undefined, auth_attempts_total, counter, "Total number of authentication attempts"},
         {3, undefined, auth_attempts_succeeded_total, counter, "Total number of successful authentication attempts"},
         {4, undefined, auth_attempts_failed_total, counter, "Total number of failed authentication attempts"}
     ]},
 
     {auth_attempt_detailed_metrics, [
-        {2, undefined, auth_attempts_detailed_total, counter, "Total number of authorization attempts with source info"},
-        {3, undefined, auth_attempts_detailed_succeeded_total, counter, "Total number of successful authorization attempts with source info"},
-        {4, undefined, auth_attempts_detailed_failed_total, counter, "Total number of failed authorization attempts with source info"}
+        {2, undefined, auth_attempts_detailed_total, counter, "Total number of authentication attempts with source info"},
+        {3, undefined, auth_attempts_detailed_succeeded_total, counter, "Total number of successful authentication attempts with source info"},
+        {4, undefined, auth_attempts_detailed_failed_total, counter, "Total number of failed authentication attempts with source info"}
     ]},
 
 %%% Those metrics have reference only to a queue name. This is the only group where filtering (e.g. by vhost) makes sense.
@@ -262,13 +262,14 @@ collect_mf(_Registry, Callback) ->
     ok.
 
 collect(PerObjectMetrics, Prefix, VHostsFilter, QueuesFilter, IncludedMFs, Callback) ->
-    [begin
+    _ = [begin
          Data = get_data(Table, PerObjectMetrics, VHostsFilter, QueuesFilter),
          mf(Callback, Prefix, Contents, Data)
-     end || {Table, Contents} <- IncludedMFs, not mutually_exclusive_mf(PerObjectMetrics, Table, IncludedMFs)].
+     end || {Table, Contents} <- IncludedMFs, not mutually_exclusive_mf(PerObjectMetrics, Table, IncludedMFs)],
+    ok.
 
 totals(Callback) ->
-    [begin
+    _ = [begin
          Size = ets:info(Table, size),
          mf_totals(Callback, Name, Type, Help, Size)
      end || {Table, Name, Type, Help} <- ?TOTALS],
@@ -345,7 +346,7 @@ add_metric_family({Name, Type, Help, Metrics}, Callback) ->
     Callback(create_mf(MN, Help, Type, Metrics)).
 
 mf(Callback, Prefix, Contents, Data) ->
-    [begin
+    _ = [begin
          Fun = case Conversion of
                    undefined ->
                        fun(D) -> element(Index, D) end;
@@ -390,8 +391,15 @@ mf_totals(Callback, Name, Type, Help, Size) ->
         )
     ).
 
+has_value_p('NaN') ->
+    false;
+has_value_p(undefined) ->
+    false;
+has_value_p(_) ->
+    true.
+
 collect_metrics(_, {Type, Fun, Items}) ->
-    [metric(Type, labels(Item), Fun(Item)) || Item <- Items].
+    [metric(Type, labels(Item), V) || {Item, V} <- [{Item, Fun(Item)} || Item <- Items], has_value_p(V)].
 
 labels(Item) ->
     label(element(1, Item)).

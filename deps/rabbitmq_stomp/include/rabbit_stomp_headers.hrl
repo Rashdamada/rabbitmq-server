@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2020-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2020-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -define(HEADER_ACCEPT_VERSION, "accept-version").
@@ -45,6 +45,7 @@
 -define(HEADER_X_MAX_LENGTH, "x-max-length").
 -define(HEADER_X_MAX_AGE, "x-max-age").
 -define(HEADER_X_MAX_LENGTH_BYTES, "x-max-length-bytes").
+-define(HEADER_X_STREAM_MAX_SEGMENT_SIZE_BYTES, "x-stream-max-segment-size-bytes").
 -define(HEADER_X_MAX_PRIORITY, "x-max-priority").
 -define(HEADER_X_MESSAGE_TTL, "x-message-ttl").
 -define(HEADER_X_QUEUE_NAME, "x-queue-name").
@@ -62,6 +63,7 @@
                            ?HEADER_X_EXPIRES,
                            ?HEADER_X_MAX_LENGTH,
                            ?HEADER_X_MAX_AGE,
+                           ?HEADER_X_STREAM_MAX_SEGMENT_SIZE_BYTES,
                            ?HEADER_X_MAX_LENGTH_BYTES,
                            ?HEADER_X_MAX_PRIORITY,
                            ?HEADER_X_MESSAGE_TTL,

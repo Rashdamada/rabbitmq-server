@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_misc).
@@ -23,7 +23,6 @@
 -export([die/1, frame_error/2, amqp_error/4, quit/1,
          protocol_error/3, protocol_error/4, protocol_error/1]).
 -export([type_class/1, assert_args_equivalence/4, assert_field_equivalence/4]).
--export([dirty_read/1]).
 -export([table_lookup/2, set_table_value/4, amqp_table/1, to_amqp_table/1]).
 -export([r/3, r/2, r_arg/4, rs/1]).
 -export([enable_cover/0, report_cover/0]).
@@ -31,15 +30,10 @@
 -export([start_cover/1]).
 -export([throw_on_error/2, with_exit_handler/2, is_abnormal_exit/1,
          filter_exit_map/2]).
--export([with_user/2]).
--export([execute_mnesia_transaction/1]).
--export([execute_mnesia_transaction/2]).
--export([execute_mnesia_tx_with_tail/1]).
 -export([ensure_ok/2]).
 -export([tcp_name/3, format_inet_error/1]).
 -export([upmap/2, map_in_order/2, utf8_safe/1]).
--export([table_filter/3]).
--export([dirty_read_all/1, dirty_foreach_key/2, dirty_dump_log/1]).
+-export([dirty_dump_log/1]).
 -export([format/2, format_many/1, format_stderr/2]).
 -export([unfold/2, ceil/1, queue_fold/3]).
 -export([sort_field_table/1]).
@@ -48,7 +42,7 @@
          pid_change_node/2, node_to_fake_pid/1]).
 -export([hexify/1]).
 -export([version_compare/2, version_compare/3]).
--export([version_minor_equivalent/2, strict_version_minor_equivalent/2]).
+-export([strict_version_minor_equivalent/2]).
 -export([dict_cons/3, orddict_cons/3, maps_cons/3, gb_trees_cons/3]).
 -export([gb_trees_fold/3, gb_trees_foreach/2]).
 -export([all_module_attributes/1,
@@ -60,6 +54,7 @@
 -export([ntoa/1, ntoab/1]).
 -export([is_process_alive/1]).
 -export([pget/2, pget/3, pupdate/3, pget_or_die/2, pmerge/3, pset/3, plmerge/2]).
+-export([deep_pget/2, deep_pget/3]).
 -export([format_message_queue/2]).
 -export([append_rpc_all_nodes/4, append_rpc_all_nodes/5]).
 -export([os_cmd/1, pwsh_cmd/1, win32_cmd/2]).
@@ -84,6 +79,10 @@
 -export([raw_read_file/1]).
 -export([find_child/2]).
 -export([is_regular_file/1]).
+-export([maps_any/2]).
+-export([safe_ets_update_counter/3, safe_ets_update_counter/4, safe_ets_update_counter/5,
+         safe_ets_update_element/3, safe_ets_update_element/4, safe_ets_update_element/5]).
+-export([is_even/1, is_odd/1]).
 
 %% Horrible macro to use in guards
 -define(IS_BENIGN_EXIT(R),
@@ -139,10 +138,8 @@
 -spec equivalence_fail
         (any(), any(), rabbit_types:r(any()), atom() | binary()) ->
             rabbit_types:connection_exit().
--spec dirty_read({atom(), any()}) ->
-          rabbit_types:ok_or_error2(any(), 'not_found').
 -spec table_lookup(rabbit_framing:amqp_table(), binary()) ->
-          'undefined' | {rabbit_framing:amqp_field_type(), any()}.
+    'undefined' | {rabbit_framing:amqp_field_type(), rabbit_framing:amqp_value()}.
 -spec set_table_value
         (rabbit_framing:amqp_table(), binary(), rabbit_framing:amqp_field_type(),
          rabbit_framing:amqp_value()) ->
@@ -171,22 +168,12 @@
 -spec with_exit_handler(thunk(A), thunk(A)) -> A.
 -spec is_abnormal_exit(any()) -> boolean().
 -spec filter_exit_map(fun ((A) -> B), [A]) -> [B].
--spec with_user(rabbit_types:username(), thunk(A)) -> A.
--spec execute_mnesia_transaction(thunk(A)) -> A.
--spec execute_mnesia_transaction(thunk(A), fun ((A, boolean()) -> B)) -> B.
--spec execute_mnesia_tx_with_tail
-        (thunk(fun ((boolean()) -> B))) -> B | (fun ((boolean()) -> B)).
 -spec ensure_ok(ok_or_error(), atom()) -> 'ok'.
 -spec tcp_name(atom(), inet:ip_address(), rabbit_net:ip_port()) ->
           atom().
 -spec format_inet_error(atom()) -> string().
 -spec upmap(fun ((A) -> B), [A]) -> [B].
 -spec map_in_order(fun ((A) -> B), [A]) -> [B].
--spec table_filter
-        (fun ((A) -> boolean()), fun ((A, boolean()) -> 'ok'), atom()) -> [A].
--spec dirty_read_all(atom()) -> [any()].
--spec dirty_foreach_key(fun ((any()) -> any()), atom()) ->
-          'ok' | 'aborted'.
 -spec dirty_dump_log(file:filename()) -> ok_or_error().
 -spec format(string(), [any()]) -> string().
 -spec format_many([{string(), [any()]}]) -> string().
@@ -204,7 +191,6 @@
 -spec version_compare
         (rabbit_semver:version_string(), rabbit_semver:version_string(),
          ('lt' | 'lte' | 'eq' | 'gte' | 'gt')) -> boolean().
--spec version_minor_equivalent(rabbit_semver:version_string(), rabbit_semver:version_string()) -> boolean().
 -spec dict_cons(any(), any(), dict:dict()) -> dict:dict().
 -spec orddict_cons(any(), any(), orddict:orddict()) -> orddict:orddict().
 -spec gb_trees_cons(any(), any(), gb_trees:tree()) -> gb_trees:tree().
@@ -231,7 +217,7 @@
 -spec pset(term(), term(), [term()]) -> [term()].
 -spec format_message_queue(any(), priority_queue:q()) -> term().
 -spec os_cmd(string()) -> string().
--spec is_os_process_alive(non_neg_integer()) -> boolean().
+-spec is_os_process_alive(non_neg_integer() | string()) -> boolean().
 -spec version() -> string().
 -spec otp_release() -> string().
 -spec otp_system_version() -> string().
@@ -360,27 +346,14 @@ val(Value) ->
                false -> "'~tp'"
            end, [Value]).
 
-%% Normally we'd call mnesia:dirty_read/1 here, but that is quite
-%% expensive due to general mnesia overheads (figuring out table types
-%% and locations, etc). We get away with bypassing these because we
-%% know that the tables we are looking at here
-%% - are not the schema table
-%% - have a local ram copy
-%% - do not have any indices
-dirty_read({Table, Key}) ->
-    case ets:lookup(Table, Key) of
-        [Result] -> {ok, Result};
-        []       -> {error, not_found}
-    end.
-
 %%
 %% Attribute Tables
 %%
 
 table_lookup(Table, Key) ->
     case lists:keysearch(Key, 1, Table) of
-        {value, {_, TypeBin, ValueBin}} -> {TypeBin, ValueBin};
-        false                           -> undefined
+        {value, {_, Type, Value}} -> {Type, Value};
+        false -> undefined
     end.
 
 set_table_value(Table, Key, Type, Value) ->
@@ -543,67 +516,6 @@ filter_exit_map(F, L) ->
                     fun () -> Ref end,
                     fun () -> F(I) end) || I <- L]).
 
-
-with_user(Username, Thunk) ->
-    fun () ->
-            case mnesia:read({rabbit_user, Username}) of
-                [] ->
-                    mnesia:abort({no_such_user, Username});
-                [_U] ->
-                    Thunk()
-            end
-    end.
-
-execute_mnesia_transaction(TxFun) ->
-    %% Making this a sync_transaction allows us to use dirty_read
-    %% elsewhere and get a consistent result even when that read
-    %% executes on a different node.
-    case worker_pool:submit(
-           fun () ->
-                   case mnesia:is_transaction() of
-                       false -> DiskLogBefore = mnesia_dumper:get_log_writes(),
-                                Res = mnesia:sync_transaction(TxFun),
-                                DiskLogAfter  = mnesia_dumper:get_log_writes(),
-                                case DiskLogAfter == DiskLogBefore of
-                                    true  -> file_handle_cache_stats:update(
-                                              mnesia_ram_tx),
-                                             Res;
-                                    false -> file_handle_cache_stats:update(
-                                              mnesia_disk_tx),
-                                             {sync, Res}
-                                end;
-                       true  -> mnesia:sync_transaction(TxFun)
-                   end
-           end, single) of
-        {sync, {atomic,  Result}} -> mnesia_sync:sync(), Result;
-        {sync, {aborted, Reason}} -> throw({error, Reason});
-        {atomic,  Result}         -> Result;
-        {aborted, Reason}         -> throw({error, Reason})
-    end.
-
-%% Like execute_mnesia_transaction/1 with additional Pre- and Post-
-%% commit function
-execute_mnesia_transaction(TxFun, PrePostCommitFun) ->
-    case mnesia:is_transaction() of
-        true  -> throw(unexpected_transaction);
-        false -> ok
-    end,
-    PrePostCommitFun(execute_mnesia_transaction(
-                       fun () ->
-                               Result = TxFun(),
-                               PrePostCommitFun(Result, true),
-                               Result
-                       end), false).
-
-%% Like execute_mnesia_transaction/2, but TxFun is expected to return a
-%% TailFun which gets called (only) immediately after the tx commit
-execute_mnesia_tx_with_tail(TxFun) ->
-    case mnesia:is_transaction() of
-        true  -> execute_mnesia_transaction(TxFun);
-        false -> TailFun = execute_mnesia_transaction(TxFun),
-                 TailFun()
-    end.
-
 ensure_ok(ok, _) -> ok;
 ensure_ok({error, Reason}, ErrorTag) -> throw({error, {ErrorTag, Reason}}).
 
@@ -658,41 +570,6 @@ upmap(F, L) ->
 map_in_order(F, L) ->
     lists:reverse(
       lists:foldl(fun (E, Acc) -> [F(E) | Acc] end, [], L)).
-
-%% Apply a pre-post-commit function to all entries in a table that
-%% satisfy a predicate, and return those entries.
-%%
-%% We ignore entries that have been modified or removed.
-table_filter(Pred, PrePostCommitFun, TableName) ->
-    lists:foldl(
-      fun (E, Acc) ->
-              case execute_mnesia_transaction(
-                     fun () -> mnesia:match_object(TableName, E, read) =/= []
-                                   andalso Pred(E) end,
-                     fun (false, _Tx) -> false;
-                         (true,   Tx) -> PrePostCommitFun(E, Tx), true
-                     end) of
-                  false -> Acc;
-                  true  -> [E | Acc]
-              end
-      end, [], dirty_read_all(TableName)).
-
-dirty_read_all(TableName) ->
-    mnesia:dirty_select(TableName, [{'$1',[],['$1']}]).
-
-dirty_foreach_key(F, TableName) ->
-    dirty_foreach_key1(F, TableName, mnesia:dirty_first(TableName)).
-
-dirty_foreach_key1(_F, _TableName, '$end_of_table') ->
-    ok;
-dirty_foreach_key1(F, TableName, K) ->
-    case catch mnesia:dirty_next(TableName, K) of
-        {'EXIT', _} ->
-            aborted;
-        NextKey ->
-            F(K),
-            dirty_foreach_key1(F, TableName, NextKey)
-    end.
 
 dirty_dump_log(FileName) ->
     {ok, LH} = disk_log:open([{name, dirty_dump_log},
@@ -842,60 +719,15 @@ version_compare(A, B) ->
                  end
     end.
 
-%% For versions starting from 3.7.x:
-%% Versions are considered compatible (except for special cases; see
-%% below). The feature flags will determine if they are actually
-%% compatible.
-%%
-%% For versions up-to 3.7.x:
-%% a.b.c and a.b.d match, but a.b.c and a.d.e don't. If
-%% versions do not match that pattern, just compare them.
-%%
-%% Special case for 3.6.6 because it introduced a change to the schema.
-%% e.g. 3.6.6 is not compatible with 3.6.5
-%% This special case can be removed once 3.6.x reaches EOL
-version_minor_equivalent(A, B) ->
-    {{MajA, MinA, PatchA, _}, _} = rabbit_semver:normalize(rabbit_semver:parse(A)),
-    {{MajB, MinB, PatchB, _}, _} = rabbit_semver:normalize(rabbit_semver:parse(B)),
-
-    case {MajA, MinA, MajB, MinB} of
-        {3, 6, 3, 6} ->
-            if
-                PatchA >= 6 -> PatchB >= 6;
-                PatchA < 6  -> PatchB < 6;
-                true -> false
-            end;
-        _
-          when (MajA < 3 orelse (MajA =:= 3 andalso MinA =< 6))
-               orelse
-               (MajB < 3 orelse (MajB =:= 3 andalso MinB =< 6)) ->
-            MajA =:= MajB andalso MinA =:= MinB;
-        _ ->
-            %% Starting with RabbitMQ 3.7.x, we consider this
-            %% minor release series and all subsequent series to
-            %% be possibly compatible, based on just the version.
-            %% The real compatibility check is deferred to the
-            %% rabbit_feature_flags module in rabbitmq-server.
-            true
-    end.
-
-%% This is the same as above except that e.g. 3.7.x and 3.8.x are
-%% considered incompatible (as if there were no feature flags). This is
-%% useful to check plugin compatibility (`broker_versions_requirement`
-%% field in plugins).
+%% The function below considers that e.g. 3.7.x and 3.8.x are incompatible (as
+%% if there were no feature flags). This is useful to check plugin
+%% compatibility (`broker_versions_requirement` field in plugins).
 
 strict_version_minor_equivalent(A, B) ->
-    {{MajA, MinA, PatchA, _}, _} = rabbit_semver:normalize(rabbit_semver:parse(A)),
-    {{MajB, MinB, PatchB, _}, _} = rabbit_semver:normalize(rabbit_semver:parse(B)),
+    {{MajA, MinA, _PatchA, _}, _} = rabbit_semver:normalize(rabbit_semver:parse(A)),
+    {{MajB, MinB, _PatchB, _}, _} = rabbit_semver:normalize(rabbit_semver:parse(B)),
 
-    case {MajA, MinA, MajB, MinB} of
-        {3, 6, 3, 6} -> if
-                            PatchA >= 6 -> PatchB >= 6;
-                            PatchA < 6  -> PatchB < 6;
-                            true -> false
-                        end;
-        _            -> MajA =:= MajB andalso MinA =:= MinB
-    end.
+    MajA =:= MajB andalso MinA =:= MinB.
 
 dict_cons(Key, Value, Dict) ->
     dict:update(Key, fun (List) -> [Value | List] end, [Value], Dict).
@@ -1007,7 +839,7 @@ ntoab(IP) ->
 %% loop in rabbit_amqqueue:on_node_down/1 and any delays we incur
 %% would be bad news.
 %%
-%% See also rabbit_mnesia:is_process_alive/1 which also requires the
+%% See also rabbit_process:is_process_alive/1 which also requires the
 %% process be in the same running cluster as us (i.e. not partitioned
 %% or some random node).
 is_process_alive(Pid) when node(Pid) =:= node() ->
@@ -1062,6 +894,21 @@ pupdate(K, UpdateFun, P) ->
             undefined
     end.
 
+%% pget nested values
+-spec deep_pget(list(), list() | map()) -> term().
+deep_pget(K, P) ->
+    deep_pget(K, P, undefined).
+
+-spec deep_pget(list(), list() | map(), term()) -> term().
+deep_pget([], P, _) ->
+    P;
+
+deep_pget([K|Ks], P, D) ->
+    case rabbit_misc:pget(K, P, D) of
+        D -> D;
+        Pn -> deep_pget(Ks, Pn, D)
+    end.
+
 %% property merge
 pmerge(Key, Val, List) ->
       case proplists:is_defined(Key, List) of
@@ -1071,9 +918,9 @@ pmerge(Key, Val, List) ->
 
 %% proplists merge
 plmerge(P1, P2) ->
-    %% Value from P1 suppresses value from P2
-    maps:to_list(maps:merge(maps:from_list(P2),
-                            maps:from_list(P1))).
+    %% Value from P2 supersedes value from P1
+    lists:sort(maps:to_list(maps:merge(maps:from_list(P1),
+                                       maps:from_list(P2)))).
 
 %% groups a list of proplists by a key function
 group_proplists_by(KeyFun, ListOfPropLists) ->
@@ -1430,10 +1277,178 @@ is_regular_file(Name) ->
         _ -> false
     end.
 
+-spec safe_ets_update_counter(Table, Key, UpdateOp) -> Result when
+      Table :: ets:table(),
+      Key :: term(),
+      UpdateOp :: {Pos, Incr}
+      | {Pos, Incr, Threshold, SetValue},
+      Pos :: integer(),
+      Incr :: integer(),
+      Threshold :: integer(),
+      SetValue :: integer(),
+      Result :: integer();
+    (Table, Key, [UpdateOp]) -> [Result] when
+      Table :: ets:table(),
+      Key :: term(),
+      UpdateOp :: {Pos, Incr}
+      | {Pos, Incr, Threshold, SetValue},
+      Pos :: integer(),
+      Incr :: integer(),
+      Threshold :: integer(),
+      SetValue :: integer(),
+      Result :: integer();
+    (Table, Key, Incr) -> Result when
+      Table :: ets:table(),
+      Key :: term(),
+      Incr :: integer(),
+      Result :: integer().
+safe_ets_update_counter(Tab, Key, UpdateOp) ->
+  try
+    ets:update_counter(Tab, Key, UpdateOp)
+  catch error:badarg:E ->
+    rabbit_log:debug("error updating ets counter ~p in table ~p: ~p", [Key, Tab, E]),
+    ok
+  end.
+
+-spec safe_ets_update_counter(Table, Key, UpdateOp, OnFailure) -> Result when
+    Table :: ets:table(),
+    Key :: term(),
+    UpdateOp :: {Pos, Incr}
+    | {Pos, Incr, Threshold, SetValue},
+    Pos :: integer(),
+    Incr :: integer(),
+    Threshold :: integer(),
+    SetValue :: integer(),
+    Result :: integer(),
+    OnFailure :: fun(() -> any());
+  (Table, Key, [UpdateOp], OnFailure) -> [Result] when
+    Table :: ets:table(),
+    Key :: term(),
+    UpdateOp :: {Pos, Incr}
+    | {Pos, Incr, Threshold, SetValue},
+    Pos :: integer(),
+    Incr :: integer(),
+    Threshold :: integer(),
+    SetValue :: integer(),
+    Result :: integer(),
+    OnFailure :: fun(() -> any());
+  (Table, Key, Incr, OnFailure) -> Result when
+    Table :: ets:table(),
+    Key :: term(),
+    Incr :: integer(),
+    Result :: integer(),
+    OnFailure :: fun(() -> any()).
+safe_ets_update_counter(Tab, Key, UpdateOp, OnFailure) ->
+  safe_ets_update_counter(Tab, Key, UpdateOp, fun(_) -> ok end, OnFailure).
+
+-spec safe_ets_update_counter(Table, Key, UpdateOp, OnSuccess, OnFailure) -> Result when
+    Table :: ets:table(),
+    Key :: term(),
+    UpdateOp :: {Pos, Incr}
+    | {Pos, Incr, Threshold, SetValue},
+    Pos :: integer(),
+    Incr :: integer(),
+    Threshold :: integer(),
+    SetValue :: integer(),
+    Result :: integer(),
+    OnSuccess :: fun((boolean()) -> any()),
+    OnFailure :: fun(() -> any());
+  (Table, Key, [UpdateOp], OnSuccess, OnFailure) -> [Result] when
+    Table :: ets:table(),
+    Key :: term(),
+    UpdateOp :: {Pos, Incr}
+    | {Pos, Incr, Threshold, SetValue},
+    Pos :: integer(),
+    Incr :: integer(),
+    Threshold :: integer(),
+    SetValue :: integer(),
+    Result :: integer(),
+    OnSuccess :: fun((boolean()) -> any()),
+    OnFailure :: fun(() -> any());
+  (Table, Key, Incr, OnSuccess, OnFailure) -> Result when
+  Table :: ets:table(),
+  Key :: term(),
+  Incr :: integer(),
+  Result :: integer(),
+  OnSuccess :: fun((integer()) -> any()),
+  OnFailure :: fun(() -> any()).
+safe_ets_update_counter(Tab, Key, UpdateOp, OnSuccess, OnFailure) ->
+  try
+    OnSuccess(ets:update_counter(Tab, Key, UpdateOp))
+  catch error:badarg:E ->
+    rabbit_log:debug("error updating ets counter ~p in table ~p: ~p", [Key, Tab, E]),
+    OnFailure()
+  end.
+
+
+-spec safe_ets_update_element(Table, Key, ElementSpec :: {Pos, Value}) -> boolean() when
+    Table :: ets:table(),
+    Key :: term(),
+    Pos :: pos_integer(),
+    Value :: term();
+  (Table, Key, ElementSpec :: [{Pos, Value}]) -> boolean() when
+    Table :: ets:table(),
+    Key :: term(),
+    Pos :: pos_integer(),
+    Value :: term().
+safe_ets_update_element(Tab, Key, ElementSpec) ->
+  try
+    ets:update_element(Tab, Key, ElementSpec)
+  catch error:badarg:E ->
+    rabbit_log:debug("error updating ets element ~p in table ~p: ~p", [Key, Tab, E]),
+    false
+  end.
+
+-spec safe_ets_update_element(Table, Key, ElementSpec :: {Pos, Value}, OnFailure) -> boolean() when
+    Table :: ets:table(),
+    Key :: term(),
+    Pos :: pos_integer(),
+    Value :: term(),
+    OnFailure :: fun(() -> any());
+  (Table, Key, ElementSpec :: [{Pos, Value}], OnFailure) -> boolean() when
+    Table :: ets:table(),
+    Key :: term(),
+    Pos :: pos_integer(),
+    Value :: term(),
+    OnFailure :: fun(() -> any()).
+safe_ets_update_element(Tab, Key, ElementSpec, OnFailure) ->
+  safe_ets_update_element(Tab, Key, ElementSpec, fun(_) -> ok end, OnFailure).
+
+-spec safe_ets_update_element(Table, Key, ElementSpec :: {Pos, Value}, OnSuccess, OnFailure) -> boolean() when
+    Table :: ets:table(),
+    Key :: term(),
+    Pos :: pos_integer(),
+    Value :: term(),
+    OnSuccess :: fun((boolean()) -> any()),
+    OnFailure :: fun(() -> any());
+  (Table, Key, ElementSpec :: [{Pos, Value}], OnSuccess, OnFailure) -> boolean() when
+    Table :: ets:table(),
+    Key :: term(),
+    Pos :: pos_integer(),
+    Value :: term(),
+    OnSuccess :: fun((boolean()) -> any()),
+    OnFailure :: fun(() -> any()).
+safe_ets_update_element(Tab, Key, ElementSpec, OnSuccess, OnFailure) ->
+  try
+    OnSuccess(ets:update_element(Tab, Key, ElementSpec))
+  catch error:badarg:E ->
+    rabbit_log:debug("error updating ets element ~p in table ~p: ~p", [Key, Tab, E]),
+    OnFailure(),
+    false
+  end.
+
+%% not exported by supervisor
+-type supervisor_child_id() :: term().
+-type supervisor_sup_ref() :: (Name :: atom())
+                            | {Name :: atom(), Node :: node()}
+                            | {'global', Name :: atom()}
+                            | {'via', Module :: module(), Name :: any()}
+                            | pid().
+
 %% this used to be in supervisor2
 -spec find_child(Supervisor, Name) -> [pid()] when
-      Supervisor :: supervisor:sup_ref(),
-      Name :: supervisor:child_id().
+      Supervisor :: supervisor_sup_ref(),
+      Name :: supervisor_child_id().
 find_child(Supervisor, Name) ->
     [Pid || {Name1, Pid, _Type, _Modules} <- supervisor:which_children(Supervisor),
             Name1 =:= Name].
@@ -1471,7 +1486,6 @@ whereis_name(Name) ->
 
 %% End copypasta from gen_server2.erl
 %% -------------------------------------------------------------------------
-
 %% This will execute a Powershell command without an intervening cmd.exe
 %% process. Output lines can't exceed 512 bytes.
 %%
@@ -1516,6 +1530,7 @@ win32_cmd_receive(Port, MonRef, Acc0) ->
             flush_exit(Port),
             {error, nodata}
     after 5000 ->
+              win32_cmd_receive_finish(Port, MonRef),
               {error, timeout}
     end.
 
@@ -1552,3 +1567,30 @@ find_powershell() ->
         PwshExe ->
             PwshExe
     end.
+
+%% Returns true if Pred(Key, Value) returns true for at least one Key to Value association in Map.
+%% The Pred function must return a boolean.
+-spec maps_any(Pred, Map) -> boolean() when
+      Pred :: fun((Key, Value) -> boolean()),
+      Map :: #{Key => Value}.
+maps_any(Pred, Map)
+  when is_function(Pred, 2) andalso is_map(Map) ->
+    I = maps:iterator(Map),
+    maps_any_1(Pred, maps:next(I)).
+
+maps_any_1(_Pred, none) ->
+    false;
+maps_any_1(Pred, {K, V, I}) ->
+    case Pred(K, V) of
+        true ->
+            true;
+        false ->
+            maps_any_1(Pred, maps:next(I))
+    end.
+
+-spec is_even(integer()) -> boolean().
+is_even(N) ->
+    (N band 1) =:= 0.
+-spec is_odd(integer()) -> boolean().
+is_odd(N) ->
+    (N band 1) =:= 1.

@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit).
@@ -15,8 +15,9 @@
 
 -export([start/0, boot/0, stop/0,
          stop_and_halt/0, await_startup/0, await_startup/1, await_startup/3,
-         status/0, is_running/0, alarms/0,
-         is_running/1, environment/0, rotate_logs/0, force_event_refresh/1,
+         status/0, is_running/0, is_serving/0, alarms/0,
+         is_running/1, is_serving/1, environment/0, rotate_logs/0,
+         force_event_refresh/1,
          start_fhc/0]).
 
 -export([start/2, stop/1, prep_stop/1]).
@@ -64,14 +65,8 @@
                     {enables,     external_infrastructure}]}).
 
 -rabbit_boot_step({database,
-                   [{mfa,         {rabbit_mnesia, init, []}},
+                   [{mfa,         {rabbit_db, init, []}},
                     {requires,    file_handle_cache},
-                    {enables,     external_infrastructure}]}).
-
--rabbit_boot_step({database_sync,
-                   [{description, "database sync"},
-                    {mfa,         {rabbit_sup, start_child, [mnesia_sync]}},
-                    {requires,    database},
                     {enables,     external_infrastructure}]}).
 
 -rabbit_boot_step({networking_metadata_store,
@@ -180,6 +175,12 @@
                     {requires,    [rabbit_alarm, guid_generator]},
                     {enables,     core_initialized}]}).
 
+-rabbit_boot_step({rabbit_quorum_queue_periodic_membership_reconciliation,
+                   [{description, "Quorums Queue membership reconciliation"},
+                    {mfa,         {rabbit_sup, start_restartable_child,
+                                   [rabbit_quorum_queue_periodic_membership_reconciliation]}},
+                    {requires, [database]}]}).
+
 -rabbit_boot_step({rabbit_epmd_monitor,
                    [{description, "epmd monitor"},
                     {mfa,         {rabbit_sup, start_restartable_child,
@@ -213,16 +214,6 @@
 -rabbit_boot_step({routing_ready,
                    [{description, "message delivery logic ready"},
                     {requires,    [core_initialized, recovery]}]}).
-
--rabbit_boot_step({connection_tracking,
-                   [{description, "connection tracking infrastructure"},
-                    {mfa,         {rabbit_connection_tracking, boot, []}},
-                    {enables,     routing_ready}]}).
-
--rabbit_boot_step({channel_tracking,
-                   [{description, "channel tracking infrastructure"},
-                    {mfa,         {rabbit_channel_tracking, boot, []}},
-                    {enables,     routing_ready}]}).
 
 -rabbit_boot_step({background_gc,
                    [{description, "background garbage collection"},
@@ -521,7 +512,10 @@ start_apps(Apps, RestartTypes) ->
     %% We need to load all applications involved in order to be able to
     %% find new feature flags.
     app_utils:load_applications(Apps),
-    ok = rabbit_feature_flags:refresh_feature_flags_after_app_load(Apps),
+    case rabbit_feature_flags:refresh_feature_flags_after_app_load() of
+        ok    -> ok;
+        Error -> throw(Error)
+    end,
     rabbit_prelaunch_conf:decrypt_config(Apps),
     lists:foreach(
       fun(App) ->
@@ -594,7 +588,7 @@ await_startup(Node, PrintProgressReports) ->
         false ->
             case is_running(Node) of
                 true  -> ok;
-                false -> wait_for_boot_to_start(Node),
+                false -> _ = _ = wait_for_boot_to_start(Node),
                          wait_for_boot_to_finish(Node, PrintProgressReports)
             end
     end.
@@ -607,7 +601,7 @@ await_startup(Node, PrintProgressReports, Timeout) ->
         false ->
             case is_running(Node) of
                 true  -> ok;
-                false -> wait_for_boot_to_start(Node, Timeout),
+                false -> _ = wait_for_boot_to_start(Node, Timeout),
                          wait_for_boot_to_finish(Node, PrintProgressReports, Timeout)
             end
     end.
@@ -686,10 +680,7 @@ maybe_print_boot_progress(true, IterationsLeft) ->
 
 status() ->
     Version = base_product_version(),
-    CryptoLibInfo = case crypto:info_lib() of
-        [Tuple] when is_tuple(Tuple) -> Tuple;
-        Tuple   when is_tuple(Tuple) -> Tuple
-    end,
+    [CryptoLibInfo] = crypto:info_lib(),
     SeriesSupportStatus = rabbit_release_series:readable_support_status(),
     S1 = [{pid,                  list_to_integer(os:getpid())},
           %% The timeout value used is twice that of gen_server:call/2.
@@ -735,7 +726,8 @@ status() ->
                  true ->
                      [{virtual_host_count, rabbit_vhost:count()},
                       {connection_count,
-                       length(rabbit_networking:connections_local())},
+                       length(rabbit_networking:connections_local()) +
+                       length(rabbit_networking:local_non_amqp_connections())},
                       {queue_count, total_queue_count()}];
                  false ->
                      []
@@ -773,7 +765,42 @@ total_queue_count() ->
                 end,
                 0, rabbit_vhost:list_names()).
 
--spec is_running() -> boolean().
+-spec is_serving() -> IsServing when
+      IsServing :: boolean().
+%% @doc Indicates if this RabbitMQ node is ready to serve clients or not.
+%%
+%% It differs from {@link is_running/0} in the sense that a running RabbitMQ
+%% node could be under maintenance. A serving node is one where RabbitMQ is
+%% running and is not under maintenance currently, thus accepting clients.
+
+is_serving() ->
+    ThisNode = node(),
+    is_running() andalso
+    not rabbit_maintenance:is_being_drained_local_read(ThisNode).
+
+-spec is_serving(Node) -> IsServing when
+      Node :: node(),
+      IsServing :: boolean().
+%% @doc Indicates if the given node is ready to serve client or not.
+
+is_serving(Node) when Node =:= node() ->
+    is_serving();
+is_serving(Node) ->
+    case rpc:call(Node, rabbit, is_serving, []) of
+        true -> true;
+        _    -> false
+    end.
+
+-spec is_running() -> IsRunning when
+      IsRunning :: boolean().
+%% @doc Indicates if the `rabbit' application is running on this RabbitMQ node
+%% or not.
+%%
+%% A RabbitMQ node is considered to run as soon as the `rabbit' application is
+%% running. It means this node participates to the cluster. However, it could
+%% accept or reject clients if it is under maintenance. See {@link
+%% is_serving/0} to check if this node is running and is ready to serve
+%% clients.
 
 is_running() -> is_running(node()).
 
@@ -908,8 +935,10 @@ start(normal, []) ->
         %% once, because it does not involve running code from the
         %% plugins.
         ok = app_utils:load_applications(Plugins),
-        ok = rabbit_feature_flags:refresh_feature_flags_after_app_load(
-               Plugins),
+        case rabbit_feature_flags:refresh_feature_flags_after_app_load() of
+            ok     -> ok;
+            Error1 -> throw(Error1)
+        end,
 
         persist_static_configuration(),
 
@@ -922,13 +951,13 @@ start(normal, []) ->
         {ok, SupPid}
     catch
         throw:{error, _} = Error ->
-            mnesia:stop(),
+            _ = mnesia:stop(),
             rabbit_prelaunch_errors:log_error(Error),
             rabbit_prelaunch:set_stop_reason(Error),
             rabbit_boot_state:set(stopped),
             Error;
         Class:Exception:Stacktrace ->
-            mnesia:stop(),
+            _ = mnesia:stop(),
             rabbit_prelaunch_errors:log_exception(
               Class, Exception, Stacktrace),
             Error = {error, Exception},
@@ -1009,10 +1038,7 @@ prep_stop(State) ->
 
 stop(State) ->
     ok = rabbit_alarm:stop(),
-    ok = case rabbit_mnesia:is_clustered() of
-             true  -> ok;
-             false -> rabbit_table:clear_ram_only_tables()
-         end,
+    ok = rabbit_table:maybe_clear_ram_only_tables(),
     case State of
         [] -> rabbit_prelaunch:set_stop_reason(normal);
         _  -> rabbit_prelaunch:set_stop_reason(State)
@@ -1032,7 +1058,6 @@ boot_delegate() ->
 -spec recover() -> 'ok'.
 
 recover() ->
-    ok = rabbit_policy:recover(),
     ok = rabbit_vhost:recover(),
     ok.
 
@@ -1114,7 +1139,6 @@ get_default_data_param(Param) ->
 
 data_dir() ->
     {ok, DataDir} = application:get_env(rabbit, data_dir),
-    ?assertEqual(DataDir, rabbit_mnesia:dir()),
     DataDir.
 
 %%---------------------------------------------------------------------------
@@ -1138,12 +1162,12 @@ config_locations() ->
 % This event is necessary for the stats timer to be initialized with
 % the correct values once the management agent has started
 force_event_refresh(Ref) ->
-    % direct connections, e.g. MQTT, STOMP
+    % direct connections, e.g. STOMP
     ok = rabbit_direct:force_event_refresh(Ref),
     % AMQP connections
     ok = rabbit_networking:force_connection_event_refresh(Ref),
-    % "external" connections, which are not handled by the "AMQP core",
-    % e.g. connections to the stream plugin
+    % non-AMQP connections, which are not handled by the "AMQP core",
+    % e.g. connections to the stream and MQTT plugins
     ok = rabbit_networking:force_non_amqp_connection_event_refresh(Ref),
     ok = rabbit_channel:force_event_refresh(Ref),
     ok = rabbit_amqqueue:force_event_refresh(Ref).
@@ -1625,18 +1649,20 @@ ensure_working_fhc() ->
 %% should be placed into persistent_term for efficiency.
 persist_static_configuration() ->
     persist_static_configuration(
-      [{rabbit, classic_queue_index_v2_segment_entry_count},
-       {rabbit, classic_queue_store_v2_max_cache_size},
-       {rabbit, classic_queue_store_v2_check_crc32}
+      [classic_queue_index_v2_segment_entry_count,
+       classic_queue_store_v2_max_cache_size,
+       classic_queue_store_v2_check_crc32,
+       incoming_message_interceptors
       ]).
 
-persist_static_configuration(AppParams) ->
+persist_static_configuration(Params) ->
+    App = ?MODULE,
     lists:foreach(
-      fun(Key = {App, Param}) ->
+      fun(Param) ->
               case application:get_env(App, Param) of
                   {ok, Value} ->
-                      ok = persistent_term:put(Key, Value);
+                      ok = persistent_term:put({App, Param}, Value);
                   undefined ->
                       ok
               end
-      end, AppParams).
+      end, Params).

@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_mgmt_format).
@@ -540,9 +540,12 @@ clean_channel_details(Obj) ->
          undefined -> Obj0;
          Chd ->
              pset(channel_details,
-                  lists:keydelete(pid, 1, Chd),
+                  format_channel_details(lists:keydelete(pid, 1, Chd)),
                   Obj0)
      end.
+
+format_channel_details([]) -> #{};
+format_channel_details(Any) -> Any.
 
 -spec format_consumer_arguments(proplists:proplist()) -> proplists:proplist().
 format_consumer_arguments(Obj) ->

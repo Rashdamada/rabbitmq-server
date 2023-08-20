@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 %% This gen_server starts a periodic timer on behalf of
@@ -55,7 +55,7 @@ terminate(_Arg, #state{timer_ref = undefined}) ->
     ok;
 
 terminate(_Arg, #state{timer_ref = TRef}) ->
-    timer:cancel(TRef),
+    _ = timer:cancel(TRef),
     ok.
 
 code_change(_OldVsn, State, _Extra) ->

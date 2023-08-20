@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_reader).
@@ -66,6 +66,8 @@
 -record(v1, {
           %% parent process
           parent,
+          %% Ranch ref
+          ranch_ref,
           %% socket
           sock,
           %% connection state, see connection record
@@ -143,12 +145,6 @@
 
 %%--------------------------------------------------------------------------
 
--type resource_alert() :: {WasAlarmSetForNode :: boolean(),
-                           IsThereAnyAlarmsWithSameSourceInTheCluster :: boolean(),
-                           NodeForWhichAlarmWasSetOrCleared :: node()}.
-
-%%--------------------------------------------------------------------------
-
 -spec start_link(pid(), any()) -> rabbit_types:ok(pid()).
 
 start_link(HelperSup, Ref) ->
@@ -168,7 +164,7 @@ init(Parent, HelperSup, Ref) ->
     {ok, Sock} = rabbit_networking:handshake(Ref,
         application:get_env(rabbit, proxy_protocol, false)),
     Deb = sys:debug_options([]),
-    start_connection(Parent, HelperSup, Deb, Sock).
+    start_connection(Parent, HelperSup, Ref, Deb, Sock).
 
 -spec system_continue(_,_,{[binary()], non_neg_integer(), #v1{}}) -> any().
 
@@ -210,13 +206,15 @@ info(Pid, Items) ->
 force_event_refresh(Pid, Ref) ->
     gen_server:cast(Pid, {force_event_refresh, Ref}).
 
--spec conserve_resources(pid(), atom(), resource_alert()) -> 'ok'.
+-spec conserve_resources(pid(),
+                         rabbit_alarm:resource_alarm_source(),
+                         rabbit_alarm:resource_alert()) -> 'ok'.
 
 conserve_resources(Pid, Source, {_, Conserve, _}) ->
     Pid ! {conserve_resources, Source, Conserve},
     ok.
 
--spec server_properties(rabbit_types:protocol()) ->
+-spec server_properties(rabbit_types:protocol() | 'amqp_1_0') ->
           rabbit_framing:amqp_table().
 
 server_properties(Protocol) ->
@@ -293,10 +291,10 @@ socket_op(Sock, Fun) ->
                            exit(normal)
     end.
 
--spec start_connection(pid(), pid(), any(), rabbit_net:socket()) ->
+-spec start_connection(pid(), pid(), ranch:ref(), any(), rabbit_net:socket()) ->
           no_return().
 
-start_connection(Parent, HelperSup, Deb, Sock) ->
+start_connection(Parent, HelperSup, RanchRef, Deb, Sock) ->
     process_flag(trap_exit, true),
     RealSocket = rabbit_net:unwrap_socket(Sock),
     Name = case rabbit_net:connection_string(Sock, inbound) of
@@ -314,6 +312,7 @@ start_connection(Parent, HelperSup, Deb, Sock) ->
         socket_op(Sock, fun (S) -> rabbit_net:socket_ends(S, inbound) end),
     ?store_proc_name(Name),
     State = #v1{parent              = Parent,
+                ranch_ref           = RanchRef,
                 sock                = RealSocket,
                 connection          = #connection{
                   name               = Name,
@@ -503,8 +502,8 @@ mainloop(Deb, Buf, BufLen, State = #v1{sock = Sock,
             Fmt = "accepting AMQP connection ~tp (~ts)",
             Args = [self(), ConnName],
             case Recv of
-                closed -> rabbit_log_connection:debug(Fmt, Args);
-                _      -> rabbit_log_connection:info(Fmt, Args)
+                closed -> _ = rabbit_log_connection:debug(Fmt, Args);
+                _      -> _ = rabbit_log_connection:info(Fmt, Args)
             end;
         _ ->
             ok
@@ -519,10 +518,10 @@ mainloop(Deb, Buf, BufLen, State = #v1{sock = Sock,
             stop(tcp_healthcheck, State);
         closed ->
             stop(closed, State);
-        {other, {heartbeat_send_error, Reason}} ->
+        {other, {heartbeat_send_error, _}=ErrHeartbeat} ->
             %% The only portable way to detect disconnect on blocked
             %% connection is to wait for heartbeat send failure.
-            stop(Reason, State);
+            stop(ErrHeartbeat, State);
         {error, Reason} ->
             stop(Reason, State);
         {other, {system, From, Request}} ->
@@ -568,7 +567,7 @@ handle_other({'EXIT', Parent, normal}, State = #v1{parent = Parent}) ->
     stop(closed, State);
 handle_other({'EXIT', Parent, Reason}, State = #v1{parent = Parent}) ->
     Msg = io_lib:format("broker forced connection closure with reason '~w'", [Reason]),
-    terminate(Msg, State),
+    _ = terminate(Msg, State),
     %% this is what we are expected to do according to
     %% https://www.erlang.org/doc/man/sys.html
     %%
@@ -858,7 +857,7 @@ handle_exception(State, Channel, Reason) ->
 %% more input
 -spec fatal_frame_error(_, _, _, _, _) -> no_return().
 fatal_frame_error(Error, Type, Channel, Payload, State) ->
-    frame_error(Error, Type, Channel, Payload, State),
+    _ = frame_error(Error, Type, Channel, Payload, State),
     %% grace period to allow transmission of error
     timer:sleep(?SILENT_CLOSE_DELAY * 1000),
     throw(fatal_frame_error).
@@ -1192,9 +1191,11 @@ handle_method0(#'connection.tune_ok'{frame_max   = FrameMax,
                     ok ->
                         ok;
                     {error, Reason} ->
-                        Parent ! {heartbeat_send_error, Reason};
+                        Parent ! {heartbeat_send_error, Reason},
+                        ok;
                     Unexpected ->
-                        Parent ! {heartbeat_send_error, Unexpected}
+                        Parent ! {heartbeat_send_error, Unexpected},
+                        ok
                 end,
                 ok
         end,
@@ -1211,7 +1212,8 @@ handle_method0(#'connection.tune_ok'{frame_max   = FrameMax,
              heartbeater = Heartbeater};
 
 handle_method0(#'connection.open'{virtual_host = VHost},
-               State = #v1{connection_state = opening,
+               State = #v1{ranch_ref        = RanchRef,
+                           connection_state = opening,
                            connection       = Connection = #connection{
                                                 log_name = ConnName,
                                                 user = User = #user{username = Username},
@@ -1219,7 +1221,7 @@ handle_method0(#'connection.open'{virtual_host = VHost},
                            helper_sup       = SupPid,
                            sock             = Sock,
                            throttle         = Throttle}) ->
-
+    ok = is_over_node_connection_limit(RanchRef),
     ok = is_over_vhost_connection_limit(VHost, User),
     ok = is_over_user_connection_limit(User),
     ok = rabbit_access_control:check_vhost_access(User, VHost, {socket, Sock}, #{}),
@@ -1320,6 +1322,23 @@ is_vhost_alive(VHostPath, User) ->
                             [VHostPath, User#user.username, VHostPath])
     end.
 
+is_over_node_connection_limit(RanchRef) ->
+    Limit = rabbit_misc:get_env(rabbit, connection_max, infinity),
+    case Limit of
+        infinity -> ok;
+        N when is_integer(N) ->
+            #{active_connections := ActiveConns} = ranch:info(RanchRef),
+
+            case ActiveConns > Limit of
+                false -> ok;
+                true ->
+                    rabbit_misc:protocol_error(not_allowed,
+                                            "connection refused: "
+                                            "node connection limit (~tp) is reached",
+                                            [Limit])
+            end
+    end.
+
 is_over_vhost_connection_limit(VHostPath, User) ->
     try rabbit_vhost_limit:is_over_connection_limit(VHostPath) of
         false         -> ok;
@@ -1403,18 +1422,10 @@ auth_phase(Response,
            State = #v1{connection = Connection =
                            #connection{protocol       = Protocol,
                                        auth_mechanism = {Name, AuthMechanism},
-                                       auth_state     = AuthState},
+                                       auth_state     = AuthState,
+                                       host           = RemoteAddress},
                        sock = Sock}) ->
-    rabbit_log:debug("Raw client connection hostname during authN phase: ~tp", [Connection#connection.host]),
-    RemoteAddress = case Connection#connection.host of
-        %% the hostname was already resolved, e.g. by reverse DNS lookups
-        Bin when is_binary(Bin) -> Bin;
-        %% the hostname is an IP address
-        Tuple when is_tuple(Tuple) ->
-            rabbit_data_coercion:to_binary(inet:ntoa(Connection#connection.host));
-        Other -> rabbit_data_coercion:to_binary(Other)
-    end,
-    rabbit_log:debug("Resolved client hostname during authN phase: ~ts", [RemoteAddress]),
+    rabbit_log:debug("Client address during authN phase: ~tp", [RemoteAddress]),
     case AuthMechanism:handle_response(Response, AuthState) of
         {refused, Username, Msg, Args} ->
             rabbit_core_metrics:auth_attempt_failed(RemoteAddress, Username, amqp091),
@@ -1503,13 +1514,18 @@ i(SockStat,           S) when SockStat =:= recv_oct;
                 fun ([{_, I}]) -> I end, S);
 i(ssl, #v1{sock = Sock, proxy_socket = ProxySock}) ->
     rabbit_net:proxy_ssl_info(Sock, ProxySock) /= nossl;
-i(ssl_protocol,       S) -> ssl_info(fun ({P,         _}) -> P end, S);
-i(ssl_key_exchange,   S) -> ssl_info(fun ({_, {K, _, _}}) -> K end, S);
-i(ssl_cipher,         S) -> ssl_info(fun ({_, {_, C, _}}) -> C end, S);
-i(ssl_hash,           S) -> ssl_info(fun ({_, {_, _, H}}) -> H end, S);
-i(peer_cert_issuer,   S) -> cert_info(fun rabbit_ssl:peer_cert_issuer/1,   S);
-i(peer_cert_subject,  S) -> cert_info(fun rabbit_ssl:peer_cert_subject/1,  S);
-i(peer_cert_validity, S) -> cert_info(fun rabbit_ssl:peer_cert_validity/1, S);
+i(SSL, #v1{sock = Sock, proxy_socket = ProxySock})
+  when SSL =:= ssl;
+       SSL =:= ssl_protocol;
+       SSL =:= ssl_key_exchange;
+       SSL =:= ssl_cipher;
+       SSL =:= ssl_hash ->
+    rabbit_ssl:info(SSL, {Sock, ProxySock});
+i(Cert, #v1{sock = Sock})
+  when Cert =:= peer_cert_issuer;
+       Cert =:= peer_cert_subject;
+       Cert =:= peer_cert_validity ->
+    rabbit_ssl:cert_info(Cert, Sock);
 i(channels,           #v1{channel_count = ChannelCount}) -> ChannelCount;
 i(state, #v1{connection_state = ConnectionState,
              throttle         = #throttle{blocked_by = Reasons,
@@ -1570,25 +1586,6 @@ socket_info(Get, Select, #v1{sock = Sock}) ->
                           _ -> 0
                       end;
         {error, _} -> 0
-    end.
-
-ssl_info(F, #v1{sock = Sock, proxy_socket = ProxySock}) ->
-    case rabbit_net:proxy_ssl_info(Sock, ProxySock) of
-        nossl       -> '';
-        {error, _}  -> '';
-        {ok, Items} ->
-            P = proplists:get_value(protocol, Items),
-            #{cipher := C,
-              key_exchange := K,
-              mac := H} = proplists:get_value(selected_cipher_suite, Items),
-            F({P, {K, C, H}})
-    end.
-
-cert_info(F, #v1{sock = Sock}) ->
-    case rabbit_net:peercert(Sock) of
-        nossl      -> '';
-        {error, _} -> '';
-        {ok, Cert} -> list_to_binary(F(Cert))
     end.
 
 maybe_emit_stats(State) ->

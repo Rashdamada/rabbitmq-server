@@ -2,7 +2,7 @@
 ## License, v. 2.0. If a copy of the MPL was not distributed with this
 ## file, You can obtain one at https://mozilla.org/MPL/2.0/.
 ##
-## Copyright (c) 2016-2022 VMware, Inc. or its affiliates.  All rights reserved.
+## Copyright (c) 2016-2023 VMware, Inc. or its affiliates.  All rights reserved.
 
 defmodule RabbitMQ.CLI.Ctl.Commands.ForgetClusterNodeCommand do
   alias RabbitMQ.CLI.Core.{DocGuide, Distribution, Validators}
@@ -38,8 +38,8 @@ defmodule RabbitMQ.CLI.Ctl.Commands.ForgetClusterNodeCommand do
     Stream.concat([
       become(node_name, opts),
       RabbitMQ.CLI.Core.Helpers.defer(fn ->
-        :rabbit_event.start_link()
-        :rabbit_mnesia.forget_cluster_node(to_atom(node_to_remove), true)
+        _ = :rabbit_event.start_link()
+        :rabbit_db_cluster.forget_member(to_atom(node_to_remove), true)
       end)
     ])
   end
@@ -48,7 +48,20 @@ defmodule RabbitMQ.CLI.Ctl.Commands.ForgetClusterNodeCommand do
     atom_name = to_atom(node_to_remove)
     args = [atom_name, false]
 
-    case :rabbit_misc.rpc_call(node_name, :rabbit_mnesia, :forget_cluster_node, args) do
+    ret =
+      case :rabbit_misc.rpc_call(node_name, :rabbit_db_cluster, :forget_member, args) do
+        {:badrpc, {:EXIT, {:undef, _}}} ->
+          :rabbit_misc.rpc_call(node_name, :rabbit_mnesia, :forget_cluster_node, args)
+
+        ret0 ->
+          ret0
+      end
+
+    case ret do
+      {:error, {:failed_to_remove_node, ^atom_name, :rabbit_still_running}} ->
+        {:error,
+         "RabbitMQ on node #{node_to_remove} must be stopped with 'rabbitmqctl -n #{node_to_remove} stop_app' before it can be removed"}
+
       {:error, {:failed_to_remove_node, ^atom_name, {:active, _, _}}} ->
         {:error,
          "RabbitMQ on node #{node_to_remove} must be stopped with 'rabbitmqctl -n #{node_to_remove} stop_app' before it can be removed"}

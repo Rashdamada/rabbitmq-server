@@ -30,7 +30,7 @@
 -define(STRING(Str), (byte_size(Str)):16, Str / binary).
 -define(DATASTR(Str), (byte_size(Str)):32, Str / binary).
 
--export_type([state/0]).
+-export_type([state/0, command_version/0]).
 
 -type command_version() :: 0..65535.
 -type correlation_id() :: non_neg_integer().
@@ -67,6 +67,10 @@
 -type active() :: boolean().
 -type command() ::
     {publish,
+     publisher_id(),
+     MessageCount :: non_neg_integer(),
+     Payload :: binary() | iolist()} |
+    {publish_v2,
      publisher_id(),
      MessageCount :: non_neg_integer(),
      Payload :: binary() | iolist()} |
@@ -236,6 +240,13 @@ frame({publish, PublisherId, MessageCount, Payload}) ->
     wrap_in_frame([<<?REQUEST:1,
                      ?COMMAND_PUBLISH:15,
                      ?VERSION_1:16,
+                     PublisherId:8,
+                     MessageCount:32>>,
+                   Payload]);
+frame({publish_v2, PublisherId, MessageCount, Payload}) ->
+    wrap_in_frame([<<?REQUEST:1,
+                     ?COMMAND_PUBLISH:15,
+                     ?VERSION_2:16,
                      PublisherId:8,
                      MessageCount:32>>,
                    Payload]);
@@ -621,6 +632,13 @@ parse_request(<<?REQUEST:1,
                 MessageCount:32,
                 Messages/binary>>) ->
     {publish, PublisherId, MessageCount, Messages};
+parse_request(<<?REQUEST:1,
+                ?COMMAND_PUBLISH:15,
+                ?VERSION_2:16,
+                PublisherId:8/unsigned,
+                MessageCount:32,
+                Messages/binary>>) ->
+    {publish_v2, PublisherId, MessageCount, Messages};
 parse_request(<<?REQUEST:1,
                 ?COMMAND_PUBLISH_CONFIRM:15,
                 ?VERSION_1:16,
@@ -1059,6 +1077,8 @@ list_of_longcodes(<<I:64, C:16, Rem/binary>>) ->
 command_id(declare_publisher) ->
     ?COMMAND_DECLARE_PUBLISHER;
 command_id(publish) ->
+    ?COMMAND_PUBLISH;
+command_id(publish_v2) ->
     ?COMMAND_PUBLISH;
 command_id(publish_confirm) ->
     ?COMMAND_PUBLISH_CONFIRM;

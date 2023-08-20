@@ -1,5 +1,6 @@
 *~
 .sw?
+*.tmp
 .*.sw?
 /.erlang.mk/
 /_build/
@@ -70,6 +71,8 @@ rebar3.crashdump
 *.plt
 *.lock
 
+/logs/
+
 /topic-branch-scratch/
 
 PACKAGES/
@@ -83,10 +86,12 @@ rabbitmq-server-*.tar.xz
 rabbitmq-server-*.zip
 
 traces*
+deps/rabbitmq_stomp/test/python_SUITE_data/src/deps
 callgrand*
 
 /user.bazelrc
 /bazel-*
+/extra_deps/
 
 .vscode
 .idea

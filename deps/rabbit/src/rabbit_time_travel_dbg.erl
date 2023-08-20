@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 %% This module is a debugging utility mainly meant for debugging
@@ -47,7 +47,7 @@ print() ->
     ok.
 
 stop() ->
-    dbg:stop_clear(),
+    dbg:stop(),
     ?MODULE ! stop,
     ok.
 
@@ -58,7 +58,7 @@ init() ->
 loop(Q) ->
     receive
         dump ->
-            file:write_file("time_travel.dbg",
+            _ = file:write_file("time_travel.dbg",
                 [io_lib:format("~0p~n", [E]) || E <- queue:to_list(Q)]),
             loop(Q);
         print ->
@@ -69,7 +69,8 @@ loop(Q) ->
         Msg ->
             case queue:len(Q) of
                 1000 ->
-                    loop(queue:in(Msg, queue:out(Q)));
+                    {_, Q1} = queue:out(Q),
+                    loop(queue:in(Msg, Q1));
                 _ ->
                     loop(queue:in(Msg, Q))
             end

@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 
 %% One rabbit_fifo_dlx_worker process exists per (source) quorum queue that has at-least-once dead lettering
 %% enabled. The rabbit_fifo_dlx_worker process is co-located on the quorum queue leader node.
@@ -106,7 +106,7 @@ init(QRef) ->
     {ok, undefined, {continue, QRef}}.
 
 -spec handle_continue(rabbit_amqqueue:name(), undefined) ->
-    {noreply, state()}.
+    {noreply, state()} | {stop, term(), undefined}.
 handle_continue(QRef, undefined) ->
     {ok, Prefetch} = application:get_env(rabbit,
                                          dead_letter_worker_consumer_prefetch),
@@ -114,15 +114,19 @@ handle_continue(QRef, undefined) ->
                                               dead_letter_worker_publisher_confirm_timeout),
     {ok, Q} = rabbit_amqqueue:lookup(QRef),
     {ClusterName, _MaybeOldLeaderNode} = amqqueue:get_pid(Q),
-    {ok, ConsumerState} = rabbit_fifo_dlx_client:checkout(QRef,
-                                                          {ClusterName, node()},
-                                                          Prefetch),
-    {noreply, lookup_topology(#state{queue_ref = QRef,
-                                     queue_type_state = rabbit_queue_type:init(),
-                                     settle_timeout = SettleTimeout,
-                                     dlx_client_state = ConsumerState,
-                                     monitor_ref = erlang:monitor(process, ClusterName)
-                                    })}.
+    case rabbit_fifo_dlx_client:checkout(QRef, {ClusterName, node()}, Prefetch) of
+        {ok, ConsumerState} ->
+            {noreply, lookup_topology(#state{queue_ref = QRef,
+                                             queue_type_state = rabbit_queue_type:init(),
+                                             settle_timeout = SettleTimeout,
+                                             dlx_client_state = ConsumerState,
+                                             monitor_ref = erlang:monitor(process, ClusterName)
+                                            })};
+        {error, non_local_leader = Reason} ->
+            {stop, {shutdown, Reason}, undefined};
+        Error ->
+            {stop, Error, undefined}
+    end.
 
 terminate(_Reason, State) ->
     cancel_timer(State).
@@ -131,28 +135,30 @@ handle_call(Request, From, State) ->
     rabbit_log:info("~ts received unhandled call from ~tp: ~tp", [?MODULE, From, Request]),
     {noreply, State}.
 
-handle_cast({queue_event, QRef, {_From, {machine, lookup_topology}}},
-            #state{queue_ref = QRef} = State0) ->
+handle_cast({dlx_event, _LeaderPid, lookup_topology},
+            #state{queue_ref = _} = State0) ->
     State = lookup_topology(State0),
     redeliver_and_ack(State);
-handle_cast({queue_event, QRef, {From, Evt}},
-            #state{queue_ref = QRef,
+handle_cast({dlx_event, LeaderPid, Evt},
+            #state{queue_ref = _QRef,
                    dlx_client_state = DlxState0} = State0) ->
     %% received dead-letter message from source queue
-    {ok, DlxState, Actions} = rabbit_fifo_dlx_client:handle_ra_event(From, Evt, DlxState0),
+    {ok, DlxState, Actions} = rabbit_fifo_dlx_client:handle_ra_event(LeaderPid, Evt, DlxState0),
     State1 = State0#state{dlx_client_state = DlxState},
     State = handle_queue_actions(Actions, State1),
     {noreply, State};
 handle_cast({queue_event, QRef, Evt},
             #state{queue_type_state = QTypeState0} = State0) ->
+
     case rabbit_queue_type:handle_event(QRef, Evt, QTypeState0) of
         {ok, QTypeState1, Actions} ->
             %% received e.g. confirm from target queue
             State1 = State0#state{queue_type_state = QTypeState1},
             State = handle_queue_actions(Actions, State1),
             {noreply, State};
-        eol ->
-            remove_queue(QRef, State0);
+        {eol, Actions} ->
+            State = handle_queue_actions(Actions, State0),
+            remove_queue(QRef, State);
         {protocol_error, _Type, _Reason, _Args} ->
             {noreply, State0}
     end;
@@ -177,10 +183,10 @@ handle_info({'DOWN', Ref, process, _, _},
     rabbit_log:debug("~ts terminating itself because leader of ~ts is down...",
                      [?MODULE, rabbit_misc:rs(QRef)]),
     supervisor:terminate_child(rabbit_fifo_dlx_sup, self());
-handle_info({'DOWN', _MRef, process, QPid, Reason},
+handle_info({{'DOWN', QName}, _MRef, process, QPid, Reason},
             #state{queue_type_state = QTypeState0} = State0) ->
     %% received from target classic queue
-    case rabbit_queue_type:handle_down(QPid, Reason, QTypeState0) of
+    case rabbit_queue_type:handle_down(QPid, QName, Reason, QTypeState0) of
         {ok, QTypeState, Actions} ->
             State = State0#state{queue_type_state = QTypeState},
             {noreply, handle_queue_actions(Actions, State)};
@@ -247,6 +253,10 @@ handle_queue_actions(Actions, State0) ->
               handle_rejected(QRef, MsgSeqs, S0);
           ({queue_down, _QRef}, S0) ->
               %% target classic queue is down, but not deleted
+              S0;
+          ({block, _QName}, S0) ->
+              S0;
+          ({unblock, _QName}, S0) ->
               S0
       end, State0, Actions).
 
@@ -312,7 +322,7 @@ forward(ConsumedMsg, ConsumedMsgId, ConsumedQRef, DLX, Reason,
                                  RouteToQs0 = rabbit_exchange:route(DLX, Delivery),
                                  {RouteToQs1, Cycles} = rabbit_dead_letter:detect_cycles(Reason, Msg, RouteToQs0),
                                  State1 = log_cycles(Cycles, RKeys, State0),
-                                 RouteToQs2 = rabbit_amqqueue:lookup(RouteToQs1),
+                                 RouteToQs2 = rabbit_amqqueue:lookup_many(RouteToQs1),
                                  RouteToQs = rabbit_amqqueue:prepend_extra_bcc(RouteToQs2),
                                  State2 = case RouteToQs of
                                               [] ->
@@ -464,7 +474,7 @@ redeliver0(#pending{delivery = #delivery{message = BasicMsg} = Delivery0,
     %% queues that do not exist. Therefore, filter out non-existent target queues.
     RouteToQs0 = queue_names(
                    rabbit_amqqueue:prepend_extra_bcc(
-                     rabbit_amqqueue:lookup(
+                     rabbit_amqqueue:lookup_many(
                        rabbit_exchange:route(DLX, Delivery)))),
     case {RouteToQs0, Settled} of
         {[], [_|_]} ->
@@ -496,7 +506,7 @@ redeliver0(#pending{delivery = #delivery{message = BasicMsg} = Delivery0,
                                          %% to be routed to is moved back to 'unsettled'.
                                          rejected = []},
                     State = State0#state{pendings = maps:update(OutSeq, Pend, Pendings)},
-                    deliver_to_queues(Delivery, rabbit_amqqueue:lookup(RouteToQs), State)
+                    deliver_to_queues(Delivery, rabbit_amqqueue:lookup_many(RouteToQs), State)
             end
     end.
 
@@ -533,14 +543,14 @@ maybe_cancel_timer(#state{timer = TRef,
                           pendings = Pendings} = State)
   when is_reference(TRef),
        map_size(Pendings) =:= 0 ->
-    erlang:cancel_timer(TRef, [{async, true}, {info, false}]),
+    _ = erlang:cancel_timer(TRef, [{async, true}, {info, false}]),
     State#state{timer = undefined};
 maybe_cancel_timer(State) ->
     State.
 
 cancel_timer(#state{timer = TRef} = State)
   when is_reference(TRef) ->
-    erlang:cancel_timer(TRef, [{async, true}, {info, false}]),
+    _ = erlang:cancel_timer(TRef, [{async, true}, {info, false}]),
     State#state{timer = undefined};
 cancel_timer(State) ->
     State.

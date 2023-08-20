@@ -55,7 +55,7 @@ sheet_body(State) ->
     Body = [begin
         #resource{name = Name, virtual_host = Vhost} = amqqueue:get_name(Q),
         case rabbit_amqqueue:pid_of(Q) of
-            {error, not_found} ->
+            none ->
                 ["dead", Vhost, unicode:characters_to_binary([Name, " (dead)"]),
                     0,0,0,0,0,0,0,0,0,0];
             Pid ->
@@ -86,14 +86,7 @@ sheet_body(State) ->
 
 %% This function gets all classic queues regardless of durable/exclusive status.
 list_classic_queues() ->
-    {atomic, Qs} =
-        mnesia:sync_transaction(
-          fun () ->
-                  mnesia:match_object(rabbit_queue,
-                                      amqqueue:pattern_match_on_type(rabbit_classic_queue),
-                                      read)
-          end),
-    Qs.
+    rabbit_db_queue:get_all_by_type(rabbit_classic_queue).
 
 format_int(N) when N >= 1_000_000_000 ->
     integer_to_list(N div 1_000_000_000) ++ "B";

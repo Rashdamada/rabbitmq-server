@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2016-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2016-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_mgmt_http_SUITE).
@@ -65,6 +65,7 @@ all_tests() -> [
     users_legacy_administrator_test,
     adding_a_user_with_password_test,
     adding_a_user_with_password_hash_test,
+    adding_a_user_with_generated_password_hash_test,
     adding_a_user_with_permissions_in_single_operation_test,
     adding_a_user_without_tags_fails_test,
     adding_a_user_without_password_or_hash_test,
@@ -131,6 +132,8 @@ all_tests() -> [
     if_empty_unused_test,
     parameters_test,
     global_parameters_test,
+    disabled_operator_policy_test,
+    operator_policy_test,
     policy_test,
     policy_permissions_test,
     issue67_test,
@@ -208,6 +211,11 @@ init_per_testcase(Testcase = stream_queues_have_consumers_field, Config) ->
         _ ->
             rabbit_ct_helpers:testcase_started(Config, Testcase)
     end;
+init_per_testcase(Testcase = disabled_operator_policy_test, Config) ->
+    Restrictions = [{operator_policy_changes, [{disabled, true}]}],
+    rabbit_ct_broker_helpers:rpc_all(Config,
+      application, set_env, [rabbitmq_management, restrictions, Restrictions]),
+    rabbit_ct_helpers:testcase_started(Config, Testcase);
 init_per_testcase(Testcase, Config) ->
     rabbit_ct_broker_helpers:close_all_connections(Config, 0, <<"rabbit_mgmt_SUITE:init_per_testcase">>),
     rabbit_ct_helpers:testcase_started(Config, Testcase).
@@ -264,6 +272,10 @@ end_per_testcase0(permissions_vhost_test, Config) ->
 end_per_testcase0(config_environment_test, Config) ->
     rabbit_ct_broker_helpers:rpc(Config, 0, application, unset_env,
                                  [rabbit, config_environment_test_env]),
+    Config;
+end_per_testcase0(disabled_operator_policy_test, Config) ->
+    rabbit_ct_broker_helpers:rpc(Config, 0, application, unset_env,
+                                 [rabbitmq_management, restrictions]),
     Config;
 end_per_testcase0(_, Config) -> Config.
 
@@ -582,6 +594,17 @@ adding_a_user_with_password_hash_test(Config) ->
                                        {password_hash, <<"2bb80d537b1da3e38bd30361aa855686bde0eacd7162fef6a25fe97bf527a25b">>}],
              [?CREATED, ?NO_CONTENT]),
     http_delete(Config, "/users/user11", ?NO_CONTENT).
+
+adding_a_user_with_generated_password_hash_test(Config) ->
+    #{ok := HashedPassword} = http_get(Config, "/auth/hash_password/some_password"),
+
+    http_put(Config, "/users/user12", [{tags, <<"administrator">>},
+                                       {password_hash, HashedPassword}],
+             [?CREATED, ?NO_CONTENT]),
+    % If the get succeeded, the hashed password generation is correct
+    User = http_get(Config, "/users/user12", "user12", "some_password", ?OK),
+    ?assertEqual(maps:get(password_hash, User), HashedPassword),
+    http_delete(Config, "/users/user12", ?NO_CONTENT).
 
 adding_a_user_with_permissions_in_single_operation_test(Config) ->
     QArgs = #{},
@@ -1678,7 +1701,7 @@ defs_default_queue_type_vhost(Config, QueueType) ->
     register_parameters_and_policy_validator(Config),
 
     %% Create a test vhost
-    http_put(Config, "/vhosts/test-vhost", #{defaultqueuetype => QueueType}, {group, '2xx'}),
+    http_put(Config, "/vhosts/test-vhost", #{default_queue_type => QueueType}, {group, '2xx'}),
     PermArgs = [{configure, <<".*">>}, {write, <<".*">>}, {read, <<".*">>}],
     http_put(Config, "/permissions/test-vhost/guest", PermArgs, {group, '2xx'}),
 
@@ -2809,6 +2832,53 @@ global_parameters_test(Config) ->
     InitialCount = length(http_get(Config, "/global-parameters")),
     passed.
 
+operator_policy_test(Config) ->
+    register_parameters_and_policy_validator(Config),
+    PolicyPos  = #{vhost      => <<"/">>,
+                   name       => <<"policy_pos">>,
+                   pattern    => <<".*">>,
+                   definition => #{testpos => [1,2,3]},
+                   priority   => 10},
+    PolicyEven = #{vhost      => <<"/">>,
+                   name       => <<"policy_even">>,
+                   pattern    => <<".*">>,
+                   definition => #{testeven => [1,2,3,4]},
+                   priority   => 10},
+    http_put(Config,
+             "/operator-policies/%2F/policy_pos",
+             PolicyPos,
+             {group, '2xx'}),
+    http_put(Config,
+             "/operator-policies/%2F/policy_even",
+             PolicyEven,
+             {group, '2xx'}),
+    assert_item(PolicyPos,  http_get(Config, "/operator-policies/%2F/policy_pos",  ?OK)),
+    assert_item(PolicyEven, http_get(Config, "/operator-policies/%2F/policy_even", ?OK)),
+    List = [PolicyPos, PolicyEven],
+    assert_list(List, http_get(Config, "/operator-policies",     ?OK)),
+    assert_list(List, http_get(Config, "/operator-policies/%2F", ?OK)),
+
+    http_delete(Config, "/operator-policies/%2F/policy_pos", {group, '2xx'}),
+    http_delete(Config, "/operator-policies/%2F/policy_even", {group, '2xx'}),
+    0 = length(http_get(Config, "/operator-policies")),
+    0 = length(http_get(Config, "/operator-policies/%2F")),
+    unregister_parameters_and_policy_validator(Config),
+    passed.
+
+disabled_operator_policy_test(Config) ->
+    register_parameters_and_policy_validator(Config),
+    PolicyPos  = #{vhost      => <<"/">>,
+                   name       => <<"policy_pos">>,
+                   pattern    => <<".*">>,
+                   definition => #{testpos => [1,2,3]},
+                   priority   => 10},
+    http_put(Config, "/operator-policies/%2F/policy_pos", PolicyPos, ?METHOD_NOT_ALLOWED),
+    http_delete(Config, "/operator-policies/%2F/policy_pos", ?METHOD_NOT_ALLOWED),
+    0 = length(http_get(Config, "/operator-policies",     ?OK)),
+    0 = length(http_get(Config, "/operator-policies/%2F", ?OK)),
+    unregister_parameters_and_policy_validator(Config),
+    passed.
+
 policy_test(Config) ->
     register_parameters_and_policy_validator(Config),
     PolicyPos  = #{vhost      => <<"/">>,
@@ -3359,8 +3429,7 @@ login_test(Config) ->
     ?assertEqual(200, CodeAct),
 
     %% Extract the authorization header
-    [Cookie, _Version] = binary:split(list_to_binary(proplists:get_value("set-cookie", Headers)),
-                                      <<";">>, [global]),
+    Cookie = list_to_binary(proplists:get_value("set-cookie", Headers)),
     [_, Auth] = binary:split(Cookie, <<"=">>, []),
 
     %% Request the overview with the auth obtained

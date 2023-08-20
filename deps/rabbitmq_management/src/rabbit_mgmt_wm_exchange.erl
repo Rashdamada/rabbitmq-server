@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_mgmt_wm_exchange).
@@ -41,9 +41,15 @@ resource_exists(ReqData, Context) ->
 
 to_json(ReqData, Context) ->
     try
-        [X] = rabbit_mgmt_db:augment_exchanges(
+      case rabbit_mgmt_util:disable_stats(ReqData) of
+        false ->
+          [X] = rabbit_mgmt_db:augment_exchanges(
                 [exchange(ReqData)], rabbit_mgmt_util:range(ReqData), full),
-        rabbit_mgmt_util:reply(rabbit_mgmt_format:strip_pids(X), ReqData, Context)
+          rabbit_mgmt_util:reply(rabbit_mgmt_format:strip_pids(X), ReqData, Context);
+        true ->
+          rabbit_mgmt_util:reply(rabbit_mgmt_format:strip_pids(exchange(ReqData)),
+                ReqData, Context)
+      end
     catch
         {error, invalid_range_parameters, Reason} ->
             rabbit_mgmt_util:bad_request(iolist_to_binary(Reason), ReqData, Context)

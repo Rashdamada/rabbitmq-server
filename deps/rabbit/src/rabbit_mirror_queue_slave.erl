@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2010-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2010-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_mirror_queue_slave).
@@ -106,7 +106,7 @@ handle_go(Q0) when ?is_amqqueue(Q0) ->
     %%
     process_flag(trap_exit, true), %% amqqueue_process traps exits too.
     {ok, GM} = gm:start_link(QName, ?MODULE, [self()],
-                             fun rabbit_misc:execute_mnesia_transaction/1),
+                             fun rabbit_mnesia:execute_mnesia_transaction/1),
     MRef = erlang:monitor(process, GM),
     %% We ignore the DOWN message because we are also linked and
     %% trapping exits, we just want to not get stuck and we will exit
@@ -118,7 +118,7 @@ handle_go(Q0) when ?is_amqqueue(Q0) ->
     end,
     Self = self(),
     Node = node(),
-    case rabbit_misc:execute_mnesia_transaction(
+    case rabbit_mnesia:execute_mnesia_transaction(
            fun() -> init_it(Self, GM, Node, QName) end) of
         {new, QPid, GMPids} ->
             ok = file_handle_cache:register_callback(
@@ -176,8 +176,8 @@ init_it(Self, GM, Node, QName) ->
             GMPids = amqqueue:get_gm_pids(Q),
             PSPids = amqqueue:get_slave_pids_pending_shutdown(Q),
             case [Pid || Pid <- [QPid | SPids], node(Pid) =:= Node] of
-                []     -> stop_pending_slaves(QName, PSPids),
-                          add_slave(Q, Self, GM),
+                []     -> _ = stop_pending_slaves(QName, PSPids),
+                          _ = add_slave(Q, Self, GM),
                           {new, QPid, GMPids};
                 [QPid] -> case rabbit_mnesia:is_process_alive(QPid) of
                               true  -> duplicate_live_master;
@@ -189,7 +189,7 @@ init_it(Self, GM, Node, QName) ->
                                        SPids1 = SPids -- [SPid],
                                        Q1 = amqqueue:set_slave_pids(Q, SPids1),
                                        Q2 = amqqueue:set_gm_pids(Q1, GMPids1),
-                                       add_slave(Q2, Self, GM),
+                                       _ = add_slave(Q2, Self, GM),
                                        {new, QPid, GMPids1}
                           end
             end;
@@ -442,7 +442,8 @@ terminate_shutdown(Reason, State = #state{backing_queue       = BQ,
 
 terminate_common(State) ->
     ok = rabbit_memory_monitor:deregister(self()),
-    stop_rate_timer(stop_sync_timer(State)).
+    _ = stop_rate_timer(stop_sync_timer(State)),
+    ok.
 
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
@@ -1083,11 +1084,11 @@ record_synchronised(Q0) when ?is_amqqueue(Q0) ->
                     SSPids = amqqueue:get_sync_slave_pids(Q1),
                     SSPids1 = [Self | SSPids],
                     Q2 = amqqueue:set_sync_slave_pids(Q1, SSPids1),
-                    rabbit_mirror_queue_misc:store_updated_slaves(Q2),
+                    _ = rabbit_mirror_queue_misc:store_updated_slaves(Q2),
                     {ok, Q2}
             end
         end,
-    case rabbit_misc:execute_mnesia_transaction(F) of
+    case rabbit_mnesia:execute_mnesia_transaction(F) of
         ok -> ok;
         {ok, Q2} -> rabbit_mirror_queue_misc:maybe_drop_master_after_sync(Q2)
     end.

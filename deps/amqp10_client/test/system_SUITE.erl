@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2017-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2017-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(system_SUITE).
@@ -12,7 +12,7 @@
 
 -include_lib("amqp10_common/include/amqp10_framing.hrl").
 
--include_lib("src/amqp10_client.hrl").
+-include("src/amqp10_client.hrl").
 
 -compile(export_all).
 

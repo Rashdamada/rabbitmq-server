@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_federation_link_util).
@@ -82,16 +82,8 @@ start_conn_ch(Fun, OUpstream, OUParams,
     end.
 
 get_connection_name(#upstream{name = UpstreamName},
-    #upstream_params{x_or_q = Resource}) when is_record(Resource, exchange)->
-    Policy = Resource#exchange.policy,
-    PolicyName = proplists:get_value(name, Policy),
-    connection_name(UpstreamName, PolicyName);
-
-get_connection_name(#upstream{name = UpstreamName},
-    #upstream_params{x_or_q = Resource}) when ?is_amqqueue(Resource) ->
-    Policy = amqqueue:get_policy(Resource),
-    PolicyName = proplists:get_value(name, Policy),
-    connection_name(UpstreamName, PolicyName);
+    #upstream_params{x_or_q = Resource}) when is_record(Resource, exchange) orelse ?is_amqqueue(Resource) ->
+    connection_name(UpstreamName, rabbit_policy:name(Resource));
 
 get_connection_name(_, _) ->
     connection_name(undefined, undefined).

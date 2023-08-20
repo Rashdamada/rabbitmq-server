@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_classic_queue_index_v2).
@@ -71,7 +71,8 @@
     queue_name :: rabbit_amqqueue:name(),
 
     %% Queue index directory.
-    dir :: file:filename(),
+    %% Stored as binary() as opposed to file:filename() to save memory.
+    dir :: binary(),
 
     %% Buffer of all write operations to be performed.
     %% When the buffer reaches a certain size, we reduce
@@ -197,15 +198,14 @@ init1(Name, Dir, OnSyncFun, OnSyncMsgFun) ->
     ensure_queue_name_stub_file(Name, Dir),
     #qi{
         queue_name = Name,
-        dir = Dir,
+        dir = rabbit_file:filename_to_binary(Dir),
         on_sync = OnSyncFun,
         on_sync_msg = OnSyncMsgFun
     }.
 
 ensure_queue_name_stub_file(#resource{virtual_host = VHost, name = QName}, Dir) ->
     QueueNameFile = filename:join(Dir, ?QUEUE_NAME_STUB_FILE),
-    ok = filelib:ensure_dir(QueueNameFile),
-    ok = file:write_file(QueueNameFile, <<"VHOST: ", VHost/binary, "\n",
+    ok = write_file_and_ensure_dir(QueueNameFile, <<"VHOST: ", VHost/binary, "\n",
                                           "QUEUE: ", QName/binary, "\n",
                                           "INDEX: v2\n">>).
 
@@ -216,8 +216,8 @@ reset_state(State = #qi{ queue_name     = Name,
                          on_sync        = OnSyncFun,
                          on_sync_msg    = OnSyncMsgFun }) ->
     ?DEBUG("~0p", [State]),
-    delete_and_terminate(State),
-    init1(Name, Dir, OnSyncFun, OnSyncMsgFun).
+    _ = delete_and_terminate(State),
+    init1(Name, rabbit_file:binary_to_filename(Dir), OnSyncFun, OnSyncMsgFun).
 
 -spec recover(rabbit_amqqueue:name(), shutdown_terms(), boolean(),
                     contains_predicate(),
@@ -277,8 +277,9 @@ recover(#resource{ virtual_host = VHost, name = QueueName } = Name, Terms,
              State}
     end.
 
-recover_segments(State0 = #qi { queue_name = Name, dir = Dir }, Terms, IsMsgStoreClean,
+recover_segments(State0 = #qi { queue_name = Name, dir = DirBin }, Terms, IsMsgStoreClean,
                  ContainsCheckFun, OnSyncFun, OnSyncMsgFun, CountersRef, Context) ->
+    Dir = rabbit_file:binary_to_filename(DirBin),
     SegmentFiles = rabbit_file:wildcard(".*\\" ++ ?SEGMENT_EXTENSION, Dir),
     State = case SegmentFiles of
         %% No segments found.
@@ -479,8 +480,9 @@ recover_index_v1_dirty(State0 = #qi{ queue_name = Name }, Terms, IsMsgStoreClean
 
 %% At this point all messages are persistent because transient messages
 %% were dropped during the v1 index recovery.
-recover_index_v1_common(State0 = #qi{ queue_name = Name, dir = Dir },
+recover_index_v1_common(State0 = #qi{ queue_name = Name, dir = DirBin },
                         V1State, CountersRef) ->
+    Dir = rabbit_file:binary_to_filename(DirBin),
     %% Use a temporary per-queue store state to store embedded messages.
     StoreState0 = rabbit_classic_queue_store_v2:init(Name),
     %% Go through the v1 index and publish messages to the v2 index.
@@ -539,7 +541,8 @@ terminate(VHost, Terms, State0 = #qi { dir = Dir,
     end, OpenFds),
     file_handle_cache:release_reservation(),
     %% Write recovery terms for faster recovery.
-    rabbit_recovery_terms:store(VHost, filename:basename(Dir),
+    _ = rabbit_recovery_terms:store(VHost,
+                                filename:basename(rabbit_file:binary_to_filename(Dir)),
                                 [{v2_index_state, {?VERSION, Segments}} | Terms]),
     State#qi{ segments = #{},
               fds = #{} }.
@@ -555,7 +558,7 @@ delete_and_terminate(State = #qi { dir = Dir,
     end, OpenFds),
     file_handle_cache:release_reservation(),
     %% Erase the data on disk.
-    ok = erase_index_dir(Dir),
+    ok = erase_index_dir(rabbit_file:binary_to_filename(Dir)),
     State#qi{ segments = #{},
               fds = #{} }.
 
@@ -1111,11 +1114,8 @@ queue_index_walker({start, DurableQueues}) when is_list(DurableQueues) ->
          ok = gatherer:fork(Gatherer),
          ok = worker_pool:submit_async(
                 fun () -> link(Gatherer),
-                          try
-                              queue_index_walker_reader(QueueName, Gatherer)
-                          after
-                              unlink(Gatherer)
-                          end,
+                          ok = queue_index_walker_reader(QueueName, Gatherer),
+                          unlink(Gatherer),
                           ok
                 end)
      end || QueueName <- DurableQueues],
@@ -1277,7 +1277,8 @@ queue_name_to_dir_name(#resource { kind = queue,
     rabbit_misc:format("~.36B", [Num]).
 
 segment_file(Segment, #qi{ dir = Dir }) ->
-    filename:join(Dir, integer_to_list(Segment) ++ ?SEGMENT_EXTENSION).
+    filename:join(rabbit_file:binary_to_filename(Dir),
+                  integer_to_list(Segment) ++ ?SEGMENT_EXTENSION).
 
 highest_continuous_seq_id([SeqId|Tail], EndSeqId)
         when (1 + SeqId) =:= EndSeqId ->
@@ -1287,3 +1288,14 @@ highest_continuous_seq_id([SeqId1, SeqId2|Tail], EndSeqId)
     highest_continuous_seq_id([SeqId2|Tail], EndSeqId);
 highest_continuous_seq_id([SeqId|Tail], _) ->
     {SeqId, Tail}.
+
+write_file_and_ensure_dir(Name, IOData) ->
+    case file:write_file(Name, IOData, [raw]) of
+        ok -> ok;
+        {error, enoent} ->
+            case filelib:ensure_dir(Name) of
+                ok -> file:write_file(Name, IOData, [raw]);
+                Err -> Err
+            end;
+         Err -> Err
+    end.

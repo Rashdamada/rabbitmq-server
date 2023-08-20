@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%%  Copyright (c) 2015-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%%  Copyright (c) 2015-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_priority_queue).
@@ -106,11 +106,11 @@ mutate_name_bin(P, NameBin) ->
     <<NameBin/binary, 0, P:8>>.
 
 expand_queues(QNames) ->
-    lists:unzip(
-      lists:append([expand_queue(QName) || QName <- QNames])).
+    Qs = rabbit_db_queue:get_many_durable(QNames),
+    lists:unzip(lists:append([expand_queue(Q) || Q <- Qs])).
 
-expand_queue(QName = #resource{name = QNameBin}) ->
-    {ok, Q} = rabbit_misc:dirty_read({rabbit_durable_queue, QName}),
+expand_queue(Q) ->
+    #resource{name = QNameBin} = QName = amqqueue:get_name(Q),
     case priorities(Q) of
         none -> [{QName, QName}];
         Ps   -> [{QName, QName#resource{name = mutate_name_bin(P, QNameBin)}}

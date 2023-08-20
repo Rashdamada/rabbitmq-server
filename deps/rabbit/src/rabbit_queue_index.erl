@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_queue_index).
@@ -333,8 +333,8 @@ recover(#resource{ virtual_host = VHost } = Name, Terms, MsgStoreRecovered,
 
 terminate(VHost, Terms, State = #qistate { dir = Dir }) ->
     {SegmentCounts, State1} = terminate(State),
-    rabbit_recovery_terms:store(VHost, filename:basename(Dir),
-                                [{segments, SegmentCounts} | Terms]),
+    _ = rabbit_recovery_terms:store(VHost, filename:basename(Dir),
+                                    [{segments, SegmentCounts} | Terms]),
     State1.
 
 -spec delete_and_terminate(qistate()) -> qistate().
@@ -536,7 +536,8 @@ bounds(State = #qistate { segments = Segments }) ->
 -spec start(rabbit_types:vhost(), [rabbit_amqqueue:name()]) -> {[[any()]], {walker(A), A}}.
 
 start(VHost, DurableQueueNames) ->
-    ok = rabbit_recovery_terms:start(VHost),
+    {ok, RecoveryTermsPid} = rabbit_recovery_terms:start(VHost),
+    rabbit_vhost_sup_sup:save_vhost_recovery_terms(VHost, RecoveryTermsPid),
     {DurableTerms, DurableDirectories} =
         lists:foldl(
           fun(QName, {RecoveryTerms, ValidDirectories}) ->
@@ -549,10 +550,12 @@ start(VHost, DurableQueueNames) ->
                    sets:add_element(DirName, ValidDirectories)}
           end, {[], sets:new()}, DurableQueueNames),
     %% Any queue directory we've not been asked to recover is considered garbage
-    rabbit_file:recursive_delete(
-      [DirName ||
-        DirName <- all_queue_directory_names(VHost),
-        not sets:is_element(filename:basename(DirName), DurableDirectories)]),
+    ToDelete = [filename:join([rabbit_vhost:msg_store_dir_path(VHost), "queues", Dir])
+                || Dir <- lists:subtract(all_queue_directory_names(VHost),
+                                         sets:to_list(DurableDirectories))],
+    rabbit_log:debug("Deleting unknown files/folders: ~p", [ToDelete]),
+    _ = rabbit_file:recursive_delete(ToDelete),
+
     rabbit_recovery_terms:clear(VHost),
 
     %% The backing queue interface requires that the queue recovery terms
@@ -564,8 +567,13 @@ start(VHost, DurableQueueNames) ->
 stop(VHost) -> rabbit_recovery_terms:stop(VHost).
 
 all_queue_directory_names(VHost) ->
-    filelib:wildcard(filename:join([rabbit_vhost:msg_store_dir_path(VHost),
-                                    "queues", "*"])).
+    VHostQueuesPath = filename:join([rabbit_vhost:msg_store_dir_path(VHost), "queues"]),
+    case filelib:is_dir(VHostQueuesPath) of
+        true  ->
+                    {ok, Dirs} = file:list_dir(VHostQueuesPath),
+                    Dirs;
+        false -> []
+    end.
 
 %%----------------------------------------------------------------------------
 %% startup and shutdown
@@ -944,6 +952,10 @@ action_to_entry(RelSeq, Action, JEntries) ->
         ({no_pub,    del, no_ack}) when Action == ack ->
             {set, {no_pub, del,    ack}};
         ({?PUB,      del, no_ack}) when Action == ack ->
+            {reset, none};
+        %% Special case, missing del
+        %% See journal_minus_segment1/2
+        ({?PUB,   no_del, no_ack}) when Action == ack ->
             {reset, none}
     end.
 
@@ -989,7 +1001,7 @@ append_journal_to_segment(#segment { journal_entries = JEntries,
             %% might not be required here, but before we were doing a
             %% sparse_foldr, a lists:reverse/1 seems to be the correct
             %% thing to do for now.
-            file_handle_cache:append(Hdl, lists:reverse(array:to_list(EToSeg))),
+            _ = file_handle_cache:append(Hdl, lists:reverse(array:to_list(EToSeg))),
             ok = file_handle_cache:close(Hdl),
             Segment #segment { journal_entries    = array_new(),
                                entries_to_segment = array_new([]) }
@@ -1334,6 +1346,11 @@ segment_plus_journal1({?PUB = Pub, no_del, no_ack}, {no_pub, del, no_ack}) ->
 segment_plus_journal1({?PUB, no_del, no_ack},       {no_pub, del, ack}) ->
     {undefined, -1};
 segment_plus_journal1({?PUB, del, no_ack},          {no_pub, no_del, ack}) ->
+    {undefined, -1};
+
+%% Special case, missing del
+%% See journal_minus_segment1/2
+segment_plus_journal1({?PUB, no_del, no_ack},          {no_pub, no_del, ack}) ->
     {undefined, -1}.
 
 %% Remove from the journal entries for a segment, items that are
@@ -1404,6 +1421,16 @@ journal_minus_segment1({no_pub, no_del, ack},      {?PUB, del, no_ack}) ->
     {keep, 0};
 journal_minus_segment1({no_pub, no_del, ack},      {?PUB, del, ack}) ->
     {undefined, -1};
+
+%% Just ack in journal, missing del
+%% Since 3.10 message delivery is tracked per-queue, not per-message,
+%% but to keep queue index v1 format messages are always marked as
+%% delivered on publish. But for a message that was published before
+%% 3.10 this is not the case and the delivery marker can be missing.
+%% As a workaround we add the del marker because if a message is acked
+%% it must have been delivered as well.
+journal_minus_segment1({no_pub, no_del, ack},         {?PUB, no_del, no_ack}) ->
+    {{no_pub, del, ack}, 0};
 
 %% Deliver and ack in journal
 journal_minus_segment1({no_pub, del, ack},         {?PUB, no_del, no_ack}) ->

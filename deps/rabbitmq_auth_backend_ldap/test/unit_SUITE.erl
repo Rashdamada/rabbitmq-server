@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(unit_SUITE).
@@ -15,7 +15,8 @@
 all() ->
     [
      fill,
-     ad_fill
+     ad_fill,
+     user_dn_pattern_gh_7161
     ].
 
 fill(_Config) ->
@@ -45,3 +46,8 @@ ad_fill(_Config) ->
     A1 = rabbit_auth_backend_ldap_util:get_active_directory_args(U1),
     F("x-${ad_domain}-x-${ad_user}-x", A1, "x-ADDomain-x-ADUser\\Extra-x"),
     ok.
+
+user_dn_pattern_gh_7161(_Config) ->
+    ok = application:load(rabbitmq_auth_backend_ldap),
+    {ok, UserDnPattern} = application:get_env(rabbitmq_auth_backend_ldap, user_dn_pattern),
+    ?assertEqual("${username}", UserDnPattern).

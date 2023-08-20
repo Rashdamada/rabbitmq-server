@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_shovel_status).
@@ -72,12 +72,12 @@ status() ->
 
 -spec cluster_status() -> [status_tuple()].
 cluster_status() ->
-    Nodes = rabbit_nodes:all_running(),
+    Nodes = rabbit_nodes:list_running(),
     lists:usort(rabbit_misc:append_rpc_all_nodes(Nodes, ?MODULE, status, [])).
 
 -spec cluster_status_with_nodes() -> [status_tuple()].
 cluster_status_with_nodes() ->
-    Nodes = rabbit_nodes:all_running(),
+    Nodes = rabbit_nodes:list_running(),
     lists:foldl(
         fun(Node, Acc) ->
             case rabbit_misc:rpc_call(Node, ?MODULE, status, []) of

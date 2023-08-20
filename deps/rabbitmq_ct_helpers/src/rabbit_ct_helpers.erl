@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2016-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2016-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_ct_helpers).
@@ -897,7 +897,8 @@ exec([Cmd | Args], Options) when is_list(Cmd) orelse is_binary(Cmd) ->
                | proplists:delete(env, PortOptions1)],
               Log ++ "~n~nEnvironment variables:~n" ++
               string:join(
-                [rabbit_misc:format("  ~ts=~ts", [K, V]) || {K, V} <- Env1],
+                [rabbit_misc:format("  ~ts=~ts", [K, string:replace(V, "~", "~~", all)])
+                 || {K, V} <- Env1],
                 "~n")
             }
     end,
@@ -1095,7 +1096,7 @@ eventually({Line, _}, _, 0) ->
 eventually({Line, Assertion} = TestObj, PollInterval, PollCount)
   when is_integer(Line), Line >= 0, is_function(Assertion, 0),
        is_integer(PollInterval), PollInterval >= 0,
-       is_integer(PollCount), PollCount >= 0 ->
+       is_integer(PollCount), PollCount > 0 ->
     case catch Assertion() of
         ok ->
             ok;

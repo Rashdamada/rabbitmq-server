@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_sharding_interceptor).
@@ -166,5 +166,6 @@ consumer_count(QName) ->
               rabbit_amqqueue:info(Q, [consumers])
       end).
 
-precondition_failed(Format, QName) ->
-    protocol_error(precondition_failed, Format, QName).
+-spec precondition_failed(io:format(), [any()]) -> no_return().
+precondition_failed(Format, Args) ->
+    protocol_error(precondition_failed, Format, Args).

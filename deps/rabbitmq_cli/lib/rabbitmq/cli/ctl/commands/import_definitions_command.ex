@@ -2,7 +2,7 @@
 ## License, v. 2.0. If a copy of the MPL was not distributed with this
 ## file, You can obtain one at https://mozilla.org/MPL/2.0/.
 ##
-## Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+## Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 
 defmodule RabbitMQ.CLI.Ctl.Commands.ImportDefinitionsCommand do
   alias RabbitMQ.CLI.Core.{Config, DocGuide, ExitCodes, Helpers}
@@ -31,7 +31,7 @@ defmodule RabbitMQ.CLI.Ctl.Commands.ImportDefinitionsCommand do
   end
 
   def validate([path], _) do
-    case File.exists?(path, raw: true) do
+    case File.exists?(path, [:raw]) do
       true -> :ok
       false -> {:validation_failure, {:bad_argument, "File #{path} does not exist"}}
     end
@@ -42,7 +42,7 @@ defmodule RabbitMQ.CLI.Ctl.Commands.ImportDefinitionsCommand do
   use RabbitMQ.CLI.Core.RequiresRabbitAppRunning
 
   def run([], %{node: node_name, format: format, timeout: timeout}) do
-    case IO.read(:stdio, :all) do
+    case IO.read(:stdio, :eof) do
       :eof ->
         {:error, :not_enough_args}
 

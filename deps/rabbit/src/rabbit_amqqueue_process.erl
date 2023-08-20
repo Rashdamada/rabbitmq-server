@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_amqqueue_process).
@@ -121,6 +121,7 @@
 
 -define(CREATION_EVENT_KEYS,
         [name,
+         type,
          durable,
          auto_delete,
          arguments,
@@ -129,7 +130,7 @@
          user_who_performed_action
         ]).
 
--define(INFO_KEYS, [pid | ?CREATION_EVENT_KEYS ++ ?STATISTICS_KEYS -- [name]]).
+-define(INFO_KEYS, [pid | ?CREATION_EVENT_KEYS ++ ?STATISTICS_KEYS -- [name, type]]).
 
 %%----------------------------------------------------------------------------
 
@@ -168,26 +169,23 @@ init_it(Recover, From, State = #q{q = Q})
   when ?amqqueue_exclusive_owner_is(Q, none) ->
     init_it2(Recover, From, State);
 
-%% You used to be able to declare an exclusive durable queue. Sadly we
-%% need to still tidy up after that case, there could be the remnants
-%% of one left over from an upgrade. So that's why we don't enforce
-%% Recover = new here.
 init_it(Recover, From, State = #q{q = Q0}) ->
     Owner = amqqueue:get_exclusive_owner(Q0),
     case rabbit_misc:is_process_alive(Owner) of
         true  -> erlang:monitor(process, Owner),
                  init_it2(Recover, From, State);
-        false -> #q{backing_queue       = undefined,
+        false -> %% Tidy up exclusive durable queue.
+                 #q{backing_queue       = undefined,
                     backing_queue_state = undefined,
                     q                   = Q} = State,
-                 send_reply(From, {owner_died, Q}),
                  BQ = backing_queue_module(Q),
                  {_, Terms} = recovery_status(Recover),
                  BQS = bq_init(BQ, Q, Terms),
                  %% Rely on terminate to delete the queue.
                  log_delete_exclusive(Owner, State),
                  {stop, {shutdown, missing_owner},
-                  State#q{backing_queue = BQ, backing_queue_state = BQS}}
+                  {{reply_to, From},
+                   State#q{backing_queue = BQ, backing_queue_state = BQS}}}
     end.
 
 init_it2(Recover, From, State = #q{q                   = Q,
@@ -261,7 +259,7 @@ recovery_barrier(BarrierPid) ->
 init_with_backing_queue_state(Q, BQ, BQS,
                               RateTRef, Deliveries, Senders, MTC) ->
     Owner = amqqueue:get_exclusive_owner(Q),
-    case Owner of
+    _ = case Owner of
         none -> ok;
         _    -> erlang:monitor(process, Owner)
     end,
@@ -279,24 +277,17 @@ init_with_backing_queue_state(Q, BQ, BQS,
     State3.
 
 terminate(shutdown = R,      State = #q{backing_queue = BQ, q = Q0}) ->
-    QName = amqqueue:get_name(Q0),
     rabbit_core_metrics:queue_deleted(qname(State)),
     terminate_shutdown(
     fun (BQS) ->
-        rabbit_misc:execute_mnesia_transaction(
-             fun() ->
-                [Q] = mnesia:read({rabbit_queue, QName}),
-                Q2 = amqqueue:set_state(Q, stopped),
-                %% amqqueue migration:
-                %% The amqqueue was read from this transaction, no need
-                %% to handle migration.
-                rabbit_amqqueue:store_queue(Q2)
-             end),
+        _ = update_state(stopped, Q0),
         BQ:terminate(R, BQS)
     end, State);
-terminate({shutdown, missing_owner} = Reason, State) ->
+terminate({shutdown, missing_owner = Reason}, {{reply_to, From}, #q{q = Q} = State}) ->
     %% if the owner was missing then there will be no queue, so don't emit stats
-    terminate_shutdown(terminate_delete(false, Reason, State), State);
+    State1 = terminate_shutdown(terminate_delete(false, Reason, State), State),
+    send_reply(From, {owner_died, Q}),
+    State1;
 terminate({shutdown, _} = R, State = #q{backing_queue = BQ}) ->
     rabbit_core_metrics:queue_deleted(qname(State)),
     terminate_shutdown(fun (BQS) -> BQ:terminate(R, BQS) end, State);
@@ -314,10 +305,7 @@ terminate(normal,            State) -> %% delete case
 terminate(_Reason,           State = #q{q = Q}) ->
     terminate_shutdown(fun (BQS) ->
                                Q2 = amqqueue:set_state(Q, crashed),
-                               rabbit_misc:execute_mnesia_transaction(
-                                 fun() ->
-                                         rabbit_amqqueue:store_queue(Q2)
-                                 end),
+                               rabbit_amqqueue:store_queue(Q2),
                                BQS
                        end, State).
 
@@ -325,11 +313,11 @@ terminate_delete(EmitStats, Reason0,
                  State = #q{q = Q,
                             backing_queue = BQ,
                             status = Status}) ->
-    QName = amqqueue:get_name(Q),
     ActingUser = terminated_by(Status),
     fun (BQS) ->
         Reason = case Reason0 of
                      auto_delete -> normal;
+                     missing_owner -> normal;
                      Any -> Any
                  end,
         BQS1 = BQ:delete_and_terminate(Reason, BQS),
@@ -341,7 +329,7 @@ terminate_delete(EmitStats, Reason0,
         %% logged.
         try
             %% don't care if the internal delete doesn't return 'ok'.
-            rabbit_amqqueue:internal_delete(QName, ActingUser, Reason0)
+            rabbit_amqqueue:internal_delete(Q, ActingUser, Reason0)
         catch
             {error, ReasonE} -> error(ReasonE)
         end,
@@ -382,14 +370,17 @@ code_change(_OldVsn, State, _Extra) ->
 maybe_notify_decorators(false, State) -> State;
 maybe_notify_decorators(true,  State) -> notify_decorators(State), State.
 
-notify_decorators(Event, State) -> decorator_callback(qname(State), Event, []).
+notify_decorators(Event, State) ->
+    _ = decorator_callback(qname(State), Event, []),
+    ok.
 
 notify_decorators(State = #q{consumers           = Consumers,
                              backing_queue       = BQ,
                              backing_queue_state = BQS}) ->
     P = rabbit_queue_consumers:max_active_priority(Consumers),
-    decorator_callback(qname(State), consumer_state_changed,
-                       [P, BQ:is_empty(BQS)]).
+    _ = decorator_callback(qname(State), consumer_state_changed,
+                       [P, BQ:is_empty(BQS)]),
+    ok.
 
 decorator_callback(QName, F, A) ->
     %% Look up again in case policy and hence decorators have changed
@@ -479,12 +470,12 @@ init_queue_mode(Mode, State = #q {backing_queue = BQ,
 
 init_queue_version(Version0, State = #q {backing_queue = BQ,
                                          backing_queue_state = BQS}) ->
-    %% When the version is undefined we use the default version 1.
+    %% When the version is undefined we use the default version 2.
     %% We want to BQ:set_queue_version in all cases because a v2
     %% policy might have been deleted, for example, and we want
     %% the queue to go back to v1.
     Version = case Version0 of
-        undefined -> rabbit_misc:get_env(rabbit, classic_queue_default_version, 1);
+        undefined -> rabbit_misc:get_env(rabbit, classic_queue_default_version, 2);
         _ -> Version0
     end,
     BQS1 = BQ:set_queue_version(Version, BQS),
@@ -552,7 +543,7 @@ ensure_ttl_timer(undefined, State) ->
     State;
 ensure_ttl_timer(Expiry, State = #q{ttl_timer_ref       = undefined,
                                     args_policy_version = Version}) ->
-    After = (case Expiry - os:system_time(micro_seconds) of
+    After = (case Expiry - os:system_time(microsecond) of
                  V when V > 0 -> V + 999; %% always fire later
                  _            -> 0
              end) div 1000,
@@ -719,7 +710,7 @@ maybe_deliver_or_enqueue(Delivery = #delivery{message = Message},
             send_reject_publish(Delivery, Delivered, State);
         {true, 'reject-publish-dlx'} ->
             %% Publish to DLX
-            with_dlx(
+            _ = with_dlx(
               DLX,
               fun (X) ->
                       rabbit_global_counters:messages_dead_lettered(maxlen, rabbit_classic_queue,
@@ -864,6 +855,9 @@ requeue_and_run(AckTags, State = #q{backing_queue       = BQ,
 
 fetch(AckRequired, State = #q{backing_queue       = BQ,
                               backing_queue_state = BQS}) ->
+    %% @todo We should first drop expired messages then fetch
+    %%       the message, not the other way around. Otherwise
+    %%       we will send expired messages at times.
     {Result, BQS1} = BQ:fetch(AckRequired, BQS),
     State1 = drop_expired_msgs(State#q{backing_queue_state = BQS1}),
     {Result, maybe_send_drained(Result =:= empty, State1)}.
@@ -997,7 +991,7 @@ calculate_msg_expiry(#basic_message{content = Content}, TTL) ->
     {ok, MsgTTL} = rabbit_basic:parse_expiration(Props),
     case lists:min([TTL, MsgTTL]) of
         undefined -> undefined;
-        T         -> os:system_time(micro_seconds) + T * 1000
+        T         -> os:system_time(microsecond) + T * 1000
     end.
 
 %% Logically this function should invoke maybe_send_drained/2.
@@ -1008,7 +1002,7 @@ calculate_msg_expiry(#basic_message{content = Content}, TTL) ->
 drop_expired_msgs(State) ->
     case is_empty(State) of
         true  -> State;
-        false -> drop_expired_msgs(os:system_time(micro_seconds),
+        false -> drop_expired_msgs(os:system_time(microsecond),
                                    State)
     end.
 
@@ -1788,7 +1782,7 @@ handle_pre_hibernate(State = #q{backing_queue = BQ,
       State, #q.stats_timer,
       fun () -> emit_stats(State,
                            [{idle_since,
-                             os:system_time(milli_seconds)}])
+                             os:system_time(millisecond)}])
                 end),
     State1 = rabbit_event:stop_stats_timer(State#q{backing_queue_state = BQS3},
                                            #q.stats_timer),
@@ -1883,4 +1877,10 @@ update_ha_mode(State) ->
 confirm_to_sender(Pid, QName, MsgSeqNos) ->
     rabbit_classic_queue:confirm_to_sender(Pid, QName, MsgSeqNos).
 
-
+update_state(State, Q) ->
+    Decorators = rabbit_queue_decorator:active(Q),
+    rabbit_db_queue:update(amqqueue:get_name(Q),
+                           fun(Q0) ->
+                                   Q1 = amqqueue:set_state(Q0, State),
+                                   amqqueue:set_decorators(Q1, Decorators)
+                           end).

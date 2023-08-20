@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 %%
 
 -module(rabbit_amqp1_0_session_process).
@@ -129,6 +129,24 @@ handle_info(#'basic.ack'{} = Ack, State = #state{writer_pid = WriterPid,
     [rabbit_amqp1_0_writer:send_command(WriterPid, F) ||
         F <- rabbit_amqp1_0_session:flow_fields(Reply, Session)],
     {noreply, state(Session1, State)};
+
+handle_info({#'basic.return'{}, {DTag, _Msg}}, State = #state{writer_pid = WriterPid,
+                                                              session    = Session}) ->
+    {Reply, Session1} = rabbit_amqp1_0_session:return(DTag, Session),
+    case Reply of
+        undefined ->
+            ok;
+        _ ->
+            rabbit_amqp1_0_writer:send_command(
+              WriterPid,
+              rabbit_amqp1_0_session:flow_fields(Reply, Session)
+             )
+    end,
+    {noreply, state(Session1, State)};
+
+handle_info({#'basic.return'{}, _Msg}, State = #state{session = Session}) ->
+    rabbit_log:warning("AMQP 1.0 message return without publishing sequence"),
+    {noreply, state(Session, State)};
 
 handle_info({bump_credit, Msg}, State) ->
     credit_flow:handle_bump_msg(Msg),
@@ -416,9 +434,7 @@ run_buffer1(WriterPid, BCh, Session, Buffer) ->
                     rabbit_amqp1_0_writer:send_command(
                       WriterPid,
                       rabbit_amqp1_0_session:flow_fields(Flow, Session1)),
-                    run_buffer1(WriterPid, BCh, Session1, Buffer);
-                {none, Session1} ->
-                    {Session1, Buffer}
+                    run_buffer1(WriterPid, BCh, Session1, Buffer)
             end;
         _ ->
             {Session, Buffer}

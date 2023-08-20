@@ -2,10 +2,10 @@
 ## License, v. 2.0. If a copy of the MPL was not distributed with this
 ## file, You can obtain one at https://mozilla.org/MPL/2.0/.
 ##
-## Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+## Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 
 defmodule RabbitMQ.CLI.Ctl.Commands.AddVhostCommand do
-  alias RabbitMQ.CLI.Core.{DocGuide, ExitCodes, FeatureFlags, Helpers}
+  alias RabbitMQ.CLI.Core.{DocGuide, ExitCodes, Helpers, VirtualHosts}
 
   @behaviour RabbitMQ.CLI.CommandBehaviour
 
@@ -25,41 +25,24 @@ defmodule RabbitMQ.CLI.Ctl.Commands.AddVhostCommand do
         tags: tags,
         default_queue_type: default_qt
       }) do
-    meta = %{description: desc, tags: parse_tags(tags), default_queue_type: default_qt}
-    # check if the respective feature flag is enabled
-    case default_qt do
-      "quorum" ->
-        FeatureFlags.assert_feature_flag_enabled(node_name, :quorum_queue, fn ->
-          :rabbit_misc.rpc_call(node_name, :rabbit_vhost, :add, [
-            vhost,
-            meta,
-            Helpers.cli_acting_user()
-          ])
-        end)
+    meta = %{
+      description: desc,
+      tags: VirtualHosts.parse_tags(tags),
+      default_queue_type: default_qt
+    }
 
-      "stream" ->
-        FeatureFlags.assert_feature_flag_enabled(node_name, :stream_queue, fn ->
-          :rabbit_misc.rpc_call(node_name, :rabbit_vhost, :add, [
-            vhost,
-            meta,
-            Helpers.cli_acting_user()
-          ])
-        end)
-
-      _ ->
-        :rabbit_misc.rpc_call(node_name, :rabbit_vhost, :add, [
-          vhost,
-          meta,
-          Helpers.cli_acting_user()
-        ])
-    end
+    :rabbit_misc.rpc_call(node_name, :rabbit_vhost, :add, [
+      vhost,
+      meta,
+      Helpers.cli_acting_user()
+    ])
   end
 
   def run([vhost], %{node: node_name, description: desc, tags: tags}) do
     :rabbit_misc.rpc_call(node_name, :rabbit_vhost, :add, [
       vhost,
       desc,
-      tags,
+      VirtualHosts.parse_tags(tags),
       Helpers.cli_acting_user()
     ])
   end
@@ -72,6 +55,10 @@ defmodule RabbitMQ.CLI.Ctl.Commands.AddVhostCommand do
     {:error, ExitCodes.exit_usage(), "Unsupported default queue type"}
   end
 
+  def output({:badrpc, {:EXIT, {:vhost_limit_exceeded, msg}}}, _opts) do
+    {:error, ExitCodes.exit_usage(), msg}
+  end
+
   use RabbitMQ.CLI.DefaultOutput
 
   def usage,
@@ -82,7 +69,7 @@ defmodule RabbitMQ.CLI.Ctl.Commands.AddVhostCommand do
     [
       ["<vhost>", "Virtual host name"],
       ["--description <description>", "Virtual host description"],
-      ["--tags <tags>", "Command separated list of tags"],
+      ["--tags <tag1,tag2>", "Comma-separated list of tags"],
       [
         "--default-queue-type <quorum|classic|stream>",
         "Queue type to use if no type is explicitly provided by the client"
@@ -101,14 +88,4 @@ defmodule RabbitMQ.CLI.Ctl.Commands.AddVhostCommand do
   def description(), do: "Creates a virtual host"
 
   def banner([vhost], _), do: "Adding vhost \"#{vhost}\" ..."
-
-  #
-  # Implementation
-  #
-
-  def parse_tags(tags) do
-    String.split(tags, ",", trim: true)
-    |> Enum.map(&String.trim/1)
-    |> Enum.map(&String.to_atom/1)
-  end
 end

@@ -2,7 +2,7 @@
 %% License, v. 2.0. If a copy of the MPL was not distributed with this
 %% file, You can obtain one at https://mozilla.org/MPL/2.0/.
 %%
-%% Copyright (c) 2007-2022 VMware, Inc. or its affiliates.  All rights reserved.
+%% Copyright (c) 2007-2023 VMware, Inc. or its affiliates.  All rights reserved.
 
 -module(rabbit_fifo_dlx).
 
@@ -114,11 +114,20 @@ apply(_, {dlx, #checkout{consumer = Pid,
 apply(_, {dlx, #checkout{consumer = ConsumerPid,
                          prefetch = Prefetch}},
       at_least_once,
-      #?MODULE{consumer = #dlx_consumer{checked_out = CheckedOutOldConsumer},
+      #?MODULE{consumer = #dlx_consumer{pid = OldConsumerPid,
+                                        checked_out = CheckedOutOldConsumer},
                discards = Discards0,
                msg_bytes = Bytes,
                msg_bytes_checkout = BytesCheckout} = State0) ->
     %% Since we allow only a single consumer, the new consumer replaces the old consumer.
+    case ConsumerPid of
+        OldConsumerPid ->
+            ok;
+        _ ->
+            rabbit_log:debug("Terminating ~p since ~p becomes active rabbit_fifo_dlx_worker",
+                             [OldConsumerPid, ConsumerPid]),
+            ensure_worker_terminated(State0)
+    end,
     %% All checked out messages to the old consumer need to be returned to the discards queue
     %% such that these messages will be re-delivered to the new consumer.
     %% When inserting back into the discards queue, we respect the original order in which messages
@@ -227,7 +236,7 @@ delivery_effects(CPid, Msgs0) ->
               Msgs = lists:zipwith(fun (Cmd, {Reason, MsgId}) ->
                                            {MsgId, {Reason, rabbit_fifo:get_msg(Cmd)}}
                                    end, Log, RsnIds),
-              [{send_msg, CPid, {dlx_delivery, Msgs}, [ra_event]}]
+              [{send_msg, CPid, {dlx_event, self(), {dlx_delivery, Msgs}}, [cast]}]
       end}].
 
 -spec state_enter(ra_server:ra_state() | eol, rabbit_types:r('queue'), dead_letter_handler(), state()) ->
@@ -299,7 +308,7 @@ update_config(at_least_once, at_least_once, _, State) ->
             {State, []};
         Pid ->
             %% Notify rabbit_fifo_dlx_worker about potentially updated policies.
-            {State, [{send_msg, Pid, lookup_topology, ra_event}]}
+            {State, [{send_msg, Pid, {dlx_event, self(), lookup_topology}, cast}]}
     end;
 update_config(SameDLH, SameDLH, _, State) ->
     {State, []};

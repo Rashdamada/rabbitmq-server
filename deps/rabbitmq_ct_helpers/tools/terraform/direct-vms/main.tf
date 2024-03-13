@@ -23,6 +23,19 @@ resource "aws_s3_bucket" "dirs_archive" {
   acl           = "private"
 }
 
+
+resource "aws_s3_bucket" "dirs_archive_log_bucket" {
+  bucket = "dirs_archive-log-bucket"
+}
+
+resource "aws_s3_bucket_logging" "dirs_archive" {
+  bucket = aws_s3_bucket.dirs_archive.id
+
+  target_bucket = aws_s3_bucket.dirs_archive_log_bucket.id
+  target_prefix = "log/"
+}
+
+
 locals {
   uuid             = replace(aws_s3_bucket.dirs_archive.id, local.resource_prefix, "")
   dirs_archive     = var.upload_dirs_archive

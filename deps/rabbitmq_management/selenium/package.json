@@ -19,7 +19,7 @@
     "geckodriver": "^3.0.2",
     "http-proxy": "^1.18.1",
     "path": "^0.12.7",
-    "proxy": "^1.0.2",
+    "proxy": "^2.1.1",
     "selenium-webdriver": "^4.4.0",
     "xmlhttprequest": "^1.8.0"
   },
